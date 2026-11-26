@@ -1,0 +1,57 @@
+name: Pages
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  freshness:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    outputs:
+      current: ${{ steps.freshness.outputs.current }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - name: Ensure this commit is still the default branch head
+        id: freshness
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          CHECKED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git fetch origin "$DEFAULT_BRANCH" --depth=1
+          if [ "$(git rev-parse FETCH_HEAD)" = "$CHECKED_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+  deploy:
+    needs: freshness
+    if: needs.freshness.outputs.current == 'true'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: pages-${{ github.event.repository.default_branch }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+      - uses: DeterminateSystems/nix-installer-action@v17
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - run: nix build .#web
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: result
+      - id: deployment
+        uses: actions/deploy-pages@v4

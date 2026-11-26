@@ -1,0 +1,8 @@
+# Local capture may contain private tune and vehicle data.
+*.mlg
+/target
+/result
+/result-*
+!tests/fixtures/*.mlg
+
+/dist

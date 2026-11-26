@@ -1,0 +1,7 @@
+# Dependency audit
+
+`nix flake check` runs `cargo-audit` against the RustSec advisory database revision pinned as the `advisory-db` flake input in `flake.lock`. The derivation uses `--no-fetch`, so it cannot update advisory data or contact a service during sandboxed checks. To refresh the database, run `nix flake lock --update-input advisory-db`, review the new lock revision and audit output, and run the complete `nix flake check` before committing.
+
+The first audit found two advisories affecting `quick-xml` 0.37.5 (RUSTSEC-2026-0194 and RUSTSEC-2026-0195). The parser dependency was upgraded to 0.41.0, and the current pinned-database audit reports no known vulnerabilities.
+
+The current audit reports five unmaintained-crate warnings: `paste` (RUSTSEC-2024-0436), `ttf-parser` (RUSTSEC-2026-0192), `zvariant` (RUSTSEC-2026-0370), `zbus_names` (RUSTSEC-2026-0371), and `zvariant_derive` (RUSTSEC-2026-0372). `ttf-parser` is pulled through egui's font stack, and the zbus crates are pulled through `rfd`'s Linux desktop portal support. `paste` is present only through the `metal` dependency recorded for Apple's target, which this Linux/WASM app does not build. These are cargo-audit's reported unmaintained notices, not suppressed or treated as vulnerability exceptions; no advisory ignore list is configured. Keep the audit visible in CI and review them when updating eframe/rfd and the pinned RustSec database; replacing these transitive platform dependencies directly would add unsupported forks without removing the upstream dependency relationship.

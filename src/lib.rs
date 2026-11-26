@@ -1,0 +1,717 @@
+pub mod analysis;
+pub mod log;
+pub mod playback;
+pub mod ui;
+
+use eframe::egui;
+use log::Dataset;
+use std::sync::mpsc::{self, Receiver};
+
+type LoadResult = Result<Option<(String, Dataset, Option<f64>)>, String>;
+
+#[cfg(all(target_arch = "wasm32", browser_smoke))]
+thread_local! {
+    static SMOKE_IMPORT: std::cell::RefCell<Option<(String, Vec<u8>, f64)>> = const { std::cell::RefCell::new(None) };
+    static SMOKE_CONTEXT: std::cell::RefCell<Option<egui::Context>> = const { std::cell::RefCell::new(None) };
+}
+
+#[derive(Default)]
+pub struct LogViewer {
+    dataset: Option<Dataset>,
+    filename: String,
+    error: Option<String>,
+    loading: Option<Receiver<LoadResult>>,
+    search: String,
+    playback: playback::Playback,
+    settings: GaugeSettings,
+    plots: ui::plots::PlotState,
+    maps: ui::maps::MapState,
+    theme_applied: bool,
+    #[cfg(all(target_arch = "wasm32", browser_smoke))]
+    smoke_load_ms: Option<f64>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+struct GaugeSettings {
+    version: u32,
+    initialized: bool,
+    gauges: Vec<ui::gauges::Gauge>,
+    maps: ui::maps::MapPreferences,
+    speed: f64,
+    dark_theme: bool,
+    plots_tab: bool,
+}
+impl Default for GaugeSettings {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            initialized: false,
+            gauges: Vec::new(),
+            maps: ui::maps::MapPreferences::default(),
+            speed: 1.0,
+            dark_theme: true,
+            plots_tab: false,
+        }
+    }
+}
+fn initial_gauges(data: &Dataset) -> Vec<ui::gauges::Gauge> {
+    [
+        ("RPM", "rpm"),
+        ("MAP", "kpa"),
+        ("AFR", "O2"),
+        ("Battery V", "V"),
+    ]
+    .iter()
+    .filter_map(|(name, unit)| {
+        data.field_ids(name)
+            .iter()
+            .copied()
+            .find(|&id| data.fields[id].unit == *unit)
+    })
+    .filter_map(|id| ui::gauges::Gauge::from_field(data, id))
+    .collect()
+}
+
+impl LogViewer {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        #[cfg(all(target_arch = "wasm32", browser_smoke))]
+        SMOKE_CONTEXT.with(|context| *context.borrow_mut() = Some(cc.egui_ctx.clone()));
+        let settings: GaugeSettings = cc
+            .storage
+            .and_then(|storage| eframe::get_value(storage, "gauge-settings"))
+            .filter(|s: &GaugeSettings| s.version == 1)
+            .unwrap_or_default();
+        let mut plots: ui::plots::PlotState = cc
+            .storage
+            .and_then(|storage| eframe::get_value(storage, "plot-settings-v1"))
+            .unwrap_or_default();
+        plots.sanitize();
+        let mut playback = playback::Playback::default();
+        playback.set_speed(settings.speed);
+        Self {
+            settings,
+            plots,
+            playback,
+            ..Self::default()
+        }
+    }
+    fn open(&mut self, ctx: &egui::Context) {
+        let (tx, rx) = mpsc::channel();
+        self.loading = Some(rx);
+        let ctx = ctx.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(move || {
+            let result = match rfd::FileDialog::new()
+                .add_filter("ECU log", &["mlg"])
+                .pick_file()
+            {
+                Some(path) => {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned();
+                    std::fs::read(&path)
+                        .map_err(|e| format!("Could not read {name}: {e}"))
+                        .and_then(|bytes| log::parse(&bytes).map(|data| Some((name, data, None))))
+                }
+                None => Ok(None),
+            };
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = match rfd::AsyncFileDialog::new()
+                .add_filter("ECU log", &["mlg"])
+                .pick_file()
+                .await
+            {
+                Some(file) => {
+                    let name = file.file_name();
+                    #[cfg(browser_smoke)]
+                    let started = web_sys::window()
+                        .and_then(|window| window.performance())
+                        .map(|performance| performance.now());
+                    let bytes = file.read().await;
+                    log::parse(&bytes).map(|data| {
+                        let elapsed = {
+                            #[cfg(browser_smoke)]
+                            {
+                                started.and_then(|started| {
+                                    web_sys::window()
+                                        .and_then(|window| window.performance())
+                                        .map(|performance| performance.now() - started)
+                                })
+                            }
+                            #[cfg(not(browser_smoke))]
+                            {
+                                None
+                            }
+                        };
+                        Some((name, data, elapsed))
+                    })
+                }
+                None => Ok(None),
+            };
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+}
+impl eframe::App for LogViewer {
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        self.settings.speed = self.playback.speed;
+        eframe::set_value(storage, "gauge-settings", &self.settings);
+        eframe::set_value(storage, "plot-settings-v1", &self.plots);
+    }
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(all(target_arch = "wasm32", browser_smoke))]
+        if let Some((name, bytes, started)) = SMOKE_IMPORT.with(|file| file.borrow_mut().take()) {
+            let load_ms = log::parse(&bytes).map(|dataset| {
+                let ended = web_sys::window()
+                    .and_then(|window| window.performance())
+                    .map_or(started, |performance| performance.now());
+                (name, dataset, Some(ended - started))
+            });
+            let (sender, receiver) = mpsc::channel();
+            let result = load_ms.map(|(name, dataset, elapsed)| Some((name, dataset, elapsed)));
+            let _ = sender.send(result);
+            self.loading = Some(receiver);
+        }
+        if !self.theme_applied {
+            ctx.set_visuals(if self.settings.dark_theme {
+                egui::Visuals::dark()
+            } else {
+                egui::Visuals::light()
+            });
+            self.theme_applied = true;
+        }
+        if let Some(rx) = &self.loading {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.loading = None;
+                    match result {
+                        Ok(Some((name, data, _load_ms))) => {
+                            self.filename = name;
+                            self.playback.reset(&data);
+                            self.plots.clear_dataset_cache();
+                            self.maps.load(&data);
+                            if !self.settings.initialized {
+                                self.settings.gauges = initial_gauges(&data);
+                                self.settings.initialized = true;
+                            }
+                            self.dataset = Some(data);
+                            #[cfg(all(target_arch = "wasm32", browser_smoke))]
+                            {
+                                self.smoke_load_ms = _load_ms;
+                            }
+                            self.error = None;
+                        }
+                        Ok(None) => {}
+                        Err(e) => self.error = Some(e),
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.loading = None;
+                    self.error = Some("File selection failed unexpectedly".into());
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(data) = &self.dataset {
+            let now = ctx.input(|i| i.time);
+            self.playback.tick(now, data);
+            if self.playback.playing {
+                ctx.request_repaint();
+            }
+            if !ctx.wants_keyboard_input() && ctx.memory(|m| m.focused().is_none()) {
+                ctx.input(|i| {
+                    if i.key_pressed(egui::Key::Space) {
+                        self.playback.toggle(data);
+                    }
+                    if i.key_pressed(egui::Key::ArrowLeft) {
+                        self.playback.seek(self.playback.position - 10.0, data);
+                    }
+                    if i.key_pressed(egui::Key::ArrowRight) {
+                        self.playback.seek(self.playback.position + 10.0, data);
+                    }
+                    if i.key_pressed(egui::Key::Home) {
+                        self.playback.seek(0.0, data);
+                    }
+                    if i.key_pressed(egui::Key::End) {
+                        self.playback.seek(data.duration(), data);
+                    }
+                });
+            }
+        }
+        egui::TopBottomPanel::top("app-header").show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.heading("Log Viewer");
+                ui.separator();
+                if !self.filename.is_empty() {
+                    ui.add(egui::Label::new(&self.filename).truncate())
+                        .on_hover_text(&self.filename);
+                } else if self.loading.is_some() {
+                    ui.label("Loading log…");
+                } else {
+                    ui.label("No log loaded");
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let (icon, tip) = if self.settings.dark_theme {
+                        (ui::icons::Icon::Sun, "Switch to light theme")
+                    } else {
+                        (ui::icons::Icon::Moon, "Switch to dark theme")
+                    };
+                    if ui::icons::button(ui, icon, tip, false).clicked() {
+                        self.settings.dark_theme = !self.settings.dark_theme;
+                        self.theme_applied = false;
+                        ctx.request_repaint();
+                    }
+                    if ui
+                        .add_enabled(self.loading.is_none(), egui::Button::new("Open"))
+                        .on_hover_text("Open a different log file")
+                        .clicked()
+                    {
+                        self.open(ctx);
+                    }
+                });
+            });
+        });
+        egui::TopBottomPanel::bottom("transport").show(ctx, |ui| {
+            if let Some(data) = &self.dataset {
+                ui.horizontal(|ui| {
+                    ui.label(format!("{} samples", data.timestamps.len()));
+                    ui.separator();
+                    ui.label(format!("{:.3} s", data.duration()));
+                    if let Some(diagnostic) = &data.metadata.tune_diagnostic {
+                        ui.separator();
+                        ui.add(egui::Label::new(format!("Tune: {diagnostic}")).truncate())
+                            .on_hover_text(diagnostic);
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let (play_icon, play_tip) = if self.playback.playing {
+                        (ui::icons::Icon::Pause, "Pause playback")
+                    } else {
+                        (ui::icons::Icon::Play, "Start playback")
+                    };
+                    if ui::icons::button(ui, play_icon, play_tip, false).clicked() {
+                        self.playback.toggle(data);
+                    }
+                    if ui.button("-10 s").clicked() {
+                        self.playback.seek(self.playback.position - 10.0, data);
+                    }
+                    if ui.button("+10 s").clicked() {
+                        self.playback.seek(self.playback.position + 10.0, data);
+                    }
+                    egui::ComboBox::from_id_salt("speed")
+                        .selected_text(format!("{}x", self.playback.speed))
+                        .show_ui(ui, |ui| {
+                            for speed in playback::SPEEDS {
+                                if ui
+                                    .selectable_label(
+                                        self.playback.speed == speed,
+                                        format!("{speed}x"),
+                                    )
+                                    .clicked()
+                                {
+                                    self.playback.set_speed(speed);
+                                }
+                            }
+                        });
+                });
+                let mut range = self.plots.time_range();
+                if ui::timeline::show(ui, data, &mut self.playback, &mut range) {
+                    self.plots.set_time_range(range);
+                }
+            }
+        });
+        let mut plot_seek = None;
+        if self.dataset.is_some() {
+            egui::SidePanel::left("field-values")
+                .default_width(330.0)
+                .min_width(250.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.heading("Fields");
+                    ui.horizontal(|ui| {
+                        if ui.button("Reset all settings").clicked() {
+                            self.settings = GaugeSettings::default();
+                            if let Some(data) = &self.dataset {
+                                self.settings.gauges = initial_gauges(data);
+                                self.settings.initialized = true;
+                            }
+                            self.plots = ui::plots::PlotState::default();
+                            self.playback.set_speed(1.0);
+                            self.theme_applied = false;
+                            ctx.memory_mut(|memory| *memory = egui::Memory::default());
+                            ctx.request_repaint();
+                        }
+                    });
+                    if let Some(error) = &self.error {
+                        ui.colored_label(
+                            egui::Color32::LIGHT_RED,
+                            format!("Could not load log: {error}"),
+                        );
+                    }
+                    if let Some(data) = &self.dataset {
+                        ui.horizontal(|ui| {
+                            ui.label("Find field:");
+                            ui.text_edit_singleline(&mut self.search);
+                        });
+                        egui::ScrollArea::both()
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                egui::Grid::new("fields")
+                                    .striped(true)
+                                    .min_col_width(12.0)
+                                    .show(ui, |ui| {
+                                        ui.strong("+");
+                                        ui.strong("Field");
+                                        ui.strong("Unit");
+                                        ui.strong("Value");
+                                        ui.end_row();
+                                        let search = self.search.to_lowercase();
+                                        for field in &data.fields {
+                                            if !field.name.to_lowercase().contains(&search) {
+                                                continue;
+                                            }
+                                            if ui
+                                                .add_enabled(
+                                                    matches!(
+                                                        field.kind,
+                                                        log::FieldKind::Numeric { .. }
+                                                    ),
+                                                    egui::Button::new("+").small(),
+                                                )
+                                                .on_hover_text("Add this field to the Gauges tab")
+                                                .clicked()
+                                            {
+                                                if let Some(gauge) =
+                                                    ui::gauges::Gauge::from_field(data, field.id)
+                                                {
+                                                    self.settings.gauges.push(gauge);
+                                                }
+                                            }
+                                            ui.label(if field.name.is_empty() {
+                                                format!("(unnamed {})", field.id)
+                                            } else {
+                                                field.name.clone()
+                                            });
+                                            ui.label(&field.unit);
+                                            match self
+                                                .playback
+                                                .sample_index
+                                                .and_then(|index| data.columns[field.id][index])
+                                            {
+                                                Some(value) => {
+                                                    ui.label(ui::maps::format_table_number(value))
+                                                        .on_hover_text(format!(
+                                                            "Full parsed value: {value}"
+                                                        ));
+                                                }
+                                                None => {
+                                                    ui.label("N/A");
+                                                }
+                                            }
+                                            ui.end_row();
+                                        }
+                                    });
+                            });
+                    }
+                });
+            egui::SidePanel::right("map-panels")
+                .default_width(560.0)
+                .min_width(350.0)
+                .resizable(true)
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.settings.maps.heatmap, "Table heatmap");
+                        ui.add(
+                            egui::Slider::new(&mut self.settings.maps.trail_seconds, 0.1..=60.0)
+                                .text("Trail seconds"),
+                        );
+                    });
+                    let panel_height = (ui.available_height() - 8.0) * 0.5;
+                    ui.allocate_ui_with_layout(
+                        egui::Vec2::new(ui.available_width(), panel_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui::maps::ve_panel(
+                                ui,
+                                self.dataset.as_ref(),
+                                &self.playback,
+                                &self.maps,
+                                &mut self.settings.maps,
+                            );
+                        },
+                    );
+                    ui.separator();
+                    ui.allocate_ui_with_layout(
+                        egui::Vec2::new(ui.available_width(), panel_height),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            ui.horizontal(|ui| {
+                                ui.selectable_value(
+                                    &mut self.plots.scatter_tab,
+                                    false,
+                                    "AFR table",
+                                );
+                                ui.selectable_value(
+                                    &mut self.plots.scatter_tab,
+                                    true,
+                                    "Scatter plot",
+                                );
+                            });
+                            if self.plots.scatter_tab {
+                                if let Some(data) = &self.dataset {
+                                    ui::plots::show_scatter(
+                                        ui,
+                                        data,
+                                        &self.playback,
+                                        &mut self.plots,
+                                    );
+                                } else {
+                                    ui.label("Open a log to inspect the RPM/MAP scatter plot.");
+                                }
+                            } else {
+                                ui::maps::afr_panel(
+                                    ui,
+                                    self.dataset.as_ref(),
+                                    &self.playback,
+                                    &self.maps,
+                                    &mut self.settings.maps,
+                                );
+                            }
+                        },
+                    );
+                });
+        }
+        egui::CentralPanel::default().show(ctx, |ui| {
+            if self.dataset.is_none() {
+                let rect = egui::Rect::from_center_size(
+                    ui.available_rect_before_wrap().center(),
+                    egui::Vec2::new(164.0, 40.0),
+                );
+                if ui.put(rect, egui::Button::new("Open log…")).clicked() {
+                    self.open(ctx);
+                }
+                return;
+            }
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut self.settings.plots_tab, false, "Gauges");
+                ui.selectable_value(&mut self.settings.plots_tab, true, "Plots");
+            });
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    if let Some(data) = &self.dataset {
+                        if self.settings.plots_tab {
+                            plot_seek = ui::plots::show_time_series(
+                                ui,
+                                data,
+                                &self.playback,
+                                &mut self.plots,
+                            );
+                            if !data.metadata.derived_diagnostics.is_empty() {
+                                egui::CollapsingHeader::new("Unavailable derived fields").show(
+                                    ui,
+                                    |ui| {
+                                        for diagnostic in &data.metadata.derived_diagnostics {
+                                            ui.label(diagnostic);
+                                        }
+                                    },
+                                );
+                            }
+                        } else {
+                            ui.horizontal(|ui| {
+                                ui.heading("Gauges");
+                                if ui.button("Reset gauge layout").clicked() {
+                                    self.settings.gauges = initial_gauges(data);
+                                }
+                            });
+                            if self.settings.gauges.is_empty() {
+                                ui.label(
+                                    "Add numeric fields from the left panel to create gauges.",
+                                );
+                            }
+                            let change = ui::gauges::show_wrapped(
+                                ui,
+                                &mut self.settings.gauges,
+                                data,
+                                self.playback.sample_index,
+                            );
+                            if let Some((i, action)) = change {
+                                match action {
+                                    ui::gauges::Action::Remove => {
+                                        self.settings.gauges.remove(i);
+                                    }
+                                    ui::gauges::Action::Up if i > 0 => {
+                                        self.settings.gauges.swap(i, i - 1)
+                                    }
+                                    ui::gauges::Action::Down
+                                        if i + 1 < self.settings.gauges.len() =>
+                                    {
+                                        self.settings.gauges.swap(i, i + 1)
+                                    }
+                                    _ => {}
+                                }
+                            }
+                        }
+                    } else {
+                        ui.label(
+                            "Open a supported .mlg binary log to inspect its recorded fields.",
+                        );
+                    }
+                });
+        });
+        if let (Some(time), Some(data)) = (plot_seek, &self.dataset) {
+            self.playback.seek(time, data);
+            ctx.request_repaint();
+        }
+        #[cfg(all(target_arch = "wasm32", browser_smoke))]
+        publish_smoke_state(self);
+    }
+}
+
+#[cfg(all(target_arch = "wasm32", browser_smoke))]
+fn publish_smoke_state(app: &LogViewer) {
+    let Some(document) = web_sys::window().and_then(|window| window.document()) else {
+        return;
+    };
+    let Some(element) = document.get_element_by_id("log-viewer-smoke") else {
+        return;
+    };
+    let data = app.dataset.as_ref();
+    let index = app
+        .playback
+        .sample_index
+        .map_or_else(|| "none".into(), |i| i.to_string());
+    let current = data
+        .and_then(|data| app.playback.sample_index.map(|i| (data, i)))
+        .and_then(|(data, i)| {
+            data.field_ids("RPM")
+                .first()
+                .and_then(|&id| data.columns[id][i])
+        })
+        .map_or_else(|| "none".into(), |value| value.to_string());
+    let (afr_diagnostic, ve_diagnostic) = app.maps.smoke_summary();
+    for (key, value) in [
+        ("loaded", data.is_some().to_string()),
+        ("filename", app.filename.clone()),
+        ("sample-index", index),
+        (
+            "sample-count",
+            data.map_or(0, |d| d.timestamps.len()).to_string(),
+        ),
+        ("rpm", current),
+        ("afr-visible", data.is_some().to_string()),
+        ("ve-visible", data.is_some().to_string()),
+        ("afr-diagnostic", afr_diagnostic),
+        ("ve-diagnostic", ve_diagnostic),
+        ("error", app.error.clone().unwrap_or_default()),
+        ("loading", app.loading.is_some().to_string()),
+        (
+            "load-ms",
+            app.smoke_load_ms
+                .map_or_else(String::new, |ms| format!("{ms:.3}")),
+        ),
+    ] {
+        let _ = element.set_attribute(key, &value);
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub async fn start_web() -> Result<(), eframe::wasm_bindgen::JsValue> {
+    let window = web_sys::window().unwrap();
+    #[cfg(browser_smoke)]
+    {
+        use eframe::wasm_bindgen::{closure::Closure, JsValue};
+        let import = Closure::wrap(Box::new(
+            move |name: JsValue, buffer: JsValue, started: JsValue| {
+                let name = name.as_string().unwrap_or_else(|| "smoke.mlg".to_owned());
+                let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                let started = started.as_f64().unwrap_or_default();
+                SMOKE_IMPORT.with(|file| *file.borrow_mut() = Some((name, bytes, started)));
+                SMOKE_CONTEXT.with(|context| {
+                    if let Some(context) = context.borrow().as_ref() {
+                        context.request_repaint();
+                    }
+                });
+            },
+        ) as Box<dyn FnMut(JsValue, JsValue, JsValue)>);
+        js_sys::Reflect::set(
+            window.as_ref(),
+            &JsValue::from_str("__logViewerSmokeImport"),
+            import.as_ref(),
+        )?;
+        import.forget();
+    }
+    let document = window.document().unwrap();
+    let canvas = document
+        .get_element_by_id("app")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlCanvasElement>()?;
+    eframe::WebRunner::new()
+        .start(
+            canvas,
+            eframe::WebOptions::default(),
+            Box::new(|cc| Ok(Box::new(LogViewer::new(cc)))),
+        )
+        .await
+}
+#[cfg(target_arch = "wasm32")]
+use eframe::wasm_bindgen::JsCast;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct MemoryStorage(HashMap<String, String>);
+    impl eframe::Storage for MemoryStorage {
+        fn get_string(&self, key: &str) -> Option<String> {
+            self.0.get(key).cloned()
+        }
+        fn set_string(&mut self, key: &str, value: String) {
+            self.0.insert(key.to_owned(), value);
+        }
+        fn flush(&mut self) {}
+    }
+    #[test]
+    fn gauge_settings_round_trip() {
+        let data = log::parse(include_bytes!("../tests/fixtures/sanitized.mlg")).unwrap();
+        let mut gauge =
+            ui::gauges::Gauge::from_field(&data, data.field_ids("Battery V")[0]).unwrap();
+        gauge.size = 240.0;
+        let settings = GaugeSettings {
+            version: 1,
+            initialized: true,
+            gauges: vec![gauge],
+            maps: ui::maps::MapPreferences {
+                trail_seconds: 3.0,
+                ..Default::default()
+            },
+            speed: 2.0,
+            dark_theme: true,
+            plots_tab: true,
+        };
+        let mut storage = MemoryStorage::default();
+        eframe::set_value(&mut storage, "gauge-settings", &settings);
+        let loaded: GaugeSettings = eframe::get_value(&storage, "gauge-settings").unwrap();
+        assert_eq!(loaded.speed, 2.0);
+        assert!(loaded.plots_tab);
+        assert_eq!(loaded.maps.trail_seconds, 3.0);
+        assert_eq!(loaded.gauges[0].size, 240.0);
+        assert_eq!(loaded.gauges[0].critical_high, Some(16.0));
+        assert_eq!(
+            loaded.gauges[0].field_id(&data),
+            Some(data.field_ids("Battery V")[0])
+        );
+    }
+}

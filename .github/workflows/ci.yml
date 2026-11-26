@@ -1,0 +1,15 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: DeterminateSystems/nix-installer-action@v17
+      - uses: DeterminateSystems/magic-nix-cache-action@v8
+      - run: nix flake check
