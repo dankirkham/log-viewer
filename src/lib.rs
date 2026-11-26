@@ -1010,84 +1010,98 @@ impl eframe::App for LogViewer {
         }
         egui::CentralPanel::default().show(ctx, |ui| {
             if self.picker_open || self.dataset.is_none() {
-                ui.vertical_centered(|ui| {
-                    let top_space = (ui.available_height() * 0.12).max(20.0);
-                    ui.add_space(top_space);
-                    ui.heading("Choose a log");
-                    ui.label("Choose a sample log or open a file from disk.");
-                    if let Some(error) = &self.error {
-                        ui.colored_label(egui::Color32::LIGHT_RED, error);
-                    }
-                    ui.add_space(8.0);
-                    ui.set_max_width(640.0);
-                    let list_height = (ui.available_height() * 0.5).clamp(140.0, 320.0);
-                    let mut clicked_sample = None;
-                    egui::Frame::group(ui.style()).show(ui, |ui| {
-                        ui.set_min_width(320.0);
-                        ui.set_max_width(620.0);
-                        ui.label("Sample files");
-                        egui::ScrollArea::vertical()
-                            .id_salt("sample-file-list")
-                            .max_height(list_height)
-                            .show(ui, |ui| {
-                                for (index, sample) in SAMPLE_OPTIONS.iter().enumerate() {
-                                    if ui
-                                        .selectable_label(
-                                            self.selected_sample == Some(index),
-                                            sample.name,
-                                        )
-                                        .clicked()
-                                    {
-                                        clicked_sample = Some(index);
-                                    }
-                                }
-                            });
-                    });
-                    if let Some(index) = clicked_sample {
-                        self.selected_sample = Some(index);
-                    }
-                    ui.add_space(8.0);
-                    let mut open_selected = false;
-                    let mut open_from_disk = false;
-                    let mut buttons = |ui: &mut egui::Ui| {
-                        open_selected = ui
-                            .add_enabled(
-                                self.loading.is_none() && self.selected_sample.is_some(),
-                                egui::Button::new("Open selected sample")
-                                    .min_size(egui::vec2(200.0, 40.0)),
-                            )
-                            .clicked();
-                        open_from_disk = ui
-                            .add_enabled(
-                                self.loading.is_none(),
-                                egui::Button::new("Open file from disk…")
-                                    .min_size(egui::vec2(200.0, 40.0)),
-                            )
-                            .clicked();
-                    };
-                    if ui.available_width() >= 430.0 {
-                        ui.with_layout(
-                            egui::Layout::left_to_right(egui::Align::Center)
-                                .with_main_align(egui::Align::Center),
-                            &mut buttons,
-                        );
-                    } else {
-                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), &mut buttons);
-                    }
-                    if open_selected {
-                        if let Some(sample) =
-                            self.selected_sample.and_then(|i| SAMPLE_OPTIONS.get(i))
-                        {
-                            self.load_sample_named(ctx, sample.name, None, false);
+                let available = ui.available_rect_before_wrap();
+                let content_width = available.width().min(640.0);
+                let content_rect = egui::Rect::from_min_max(
+                    egui::Pos2::new(available.center().x - content_width * 0.5, available.top()),
+                    egui::Pos2::new(
+                        available.center().x + content_width * 0.5,
+                        available.bottom(),
+                    ),
+                );
+                ui.allocate_new_ui(egui::UiBuilder::new().max_rect(content_rect), |ui| {
+                    ui.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        let top_space = (ui.available_height() * 0.12).max(20.0);
+                        ui.add_space(top_space);
+                        ui.heading("Choose a log");
+                        ui.label("Choose a sample log or open a file from disk.");
+                        if let Some(error) = &self.error {
+                            ui.colored_label(egui::Color32::LIGHT_RED, error);
                         }
-                    } else if open_from_disk {
-                        self.open(ctx);
-                    }
-                    if self.loading.is_some() {
-                        ui.add_space(12.0);
-                        ui.spinner();
-                        ui.label("Loading log…");
-                    }
+                        ui.add_space(8.0);
+                        ui.set_max_width(640.0);
+                        let list_height = (ui.available_height() * 0.5).clamp(140.0, 320.0);
+                        let mut clicked_sample = None;
+                        egui::Frame::group(ui.style()).show(ui, |ui| {
+                            ui.set_min_width(320.0);
+                            ui.set_max_width(620.0);
+                            ui.label("Sample files");
+                            egui::ScrollArea::vertical()
+                                .id_salt("sample-file-list")
+                                .max_height(list_height)
+                                .show(ui, |ui| {
+                                    for (index, sample) in SAMPLE_OPTIONS.iter().enumerate() {
+                                        if ui
+                                            .selectable_label(
+                                                self.selected_sample == Some(index),
+                                                sample.name,
+                                            )
+                                            .clicked()
+                                        {
+                                            clicked_sample = Some(index);
+                                        }
+                                    }
+                                });
+                        });
+                        if let Some(index) = clicked_sample {
+                            self.selected_sample = Some(index);
+                        }
+                        ui.add_space(8.0);
+                        let mut open_selected = false;
+                        let mut open_from_disk = false;
+                        let mut buttons = |ui: &mut egui::Ui| {
+                            open_selected = ui
+                                .add_enabled(
+                                    self.loading.is_none() && self.selected_sample.is_some(),
+                                    egui::Button::new("Open selected sample")
+                                        .min_size(egui::vec2(200.0, 40.0)),
+                                )
+                                .clicked();
+                            open_from_disk = ui
+                                .add_enabled(
+                                    self.loading.is_none(),
+                                    egui::Button::new("Open file from disk…")
+                                        .min_size(egui::vec2(200.0, 40.0)),
+                                )
+                                .clicked();
+                        };
+                        if ui.available_width() >= 430.0 {
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::Center)
+                                    .with_main_align(egui::Align::Center),
+                                &mut buttons,
+                            );
+                        } else {
+                            ui.with_layout(
+                                egui::Layout::top_down(egui::Align::Center),
+                                &mut buttons,
+                            );
+                        }
+                        if open_selected {
+                            if let Some(sample) =
+                                self.selected_sample.and_then(|i| SAMPLE_OPTIONS.get(i))
+                            {
+                                self.load_sample_named(ctx, sample.name, None, false);
+                            }
+                        } else if open_from_disk {
+                            self.open(ctx);
+                        }
+                        if self.loading.is_some() {
+                            ui.add_space(12.0);
+                            ui.spinner();
+                            ui.label("Loading log…");
+                        }
+                    });
                 });
                 return;
             }
