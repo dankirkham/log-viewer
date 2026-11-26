@@ -216,15 +216,18 @@ fn show_maps(
         }
         ui.add(egui::Slider::new(&mut map_prefs.trail_seconds, 0.1..=60.0).text("Trail seconds"));
     });
-    egui::ScrollArea::both()
-        .id_salt("map-panel-content")
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            if mobile {
-                ui.set_min_width(620.0);
-            }
-            show_map_tables(ui, data, playback, map_state, map_prefs, plots);
-        });
+    if mobile {
+        // The responsive page already has a vertical scroll area. Keep maps in
+        // that flow instead of adding a second, clipped scroll viewport here.
+        show_map_tables(ui, data, playback, map_state, map_prefs, plots);
+    } else {
+        egui::ScrollArea::both()
+            .id_salt("map-panel-content")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                show_map_tables(ui, data, playback, map_state, map_prefs, plots);
+            });
+    }
 }
 
 fn show_map_tables(
@@ -805,6 +808,18 @@ impl eframe::App for LogViewer {
                     ui.label(notice);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui::icons::button(
+                        ui,
+                        ui::icons::Icon::Octocat,
+                        "Open the project on GitHub",
+                        false,
+                    )
+                    .clicked()
+                    {
+                        ctx.open_url(egui::OpenUrl::new_tab(
+                            "https://github.com/dankirkham/log-viewer",
+                        ));
+                    }
                     let dark_theme = ctx.theme() == egui::Theme::Dark;
                     let (icon, tip) = if dark_theme {
                         (ui::icons::Icon::Sun, "Switch to light theme")
@@ -817,7 +832,6 @@ impl eframe::App for LogViewer {
                         ctx.set_theme(egui::Theme::from_dark_mode(self.settings.dark_theme));
                         ctx.request_repaint();
                     }
-                    ui.hyperlink_to("GitHub", "https://github.com/dankirkham/log-viewer");
                 });
             });
         });

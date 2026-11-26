@@ -169,10 +169,10 @@ fn draw_table(
     let top = 34.0;
     let nx = table.x.len();
     let ny = table.y.len();
-    let w = ((ui.available_width() - left - 8.0) / nx as f32).clamp(18.0, 52.0);
+    let w = ((ui.available_width() - left - 8.0) / nx as f32).clamp(8.0, 52.0);
     // Keep table cells readable regardless of the viewport's remaining height.
     // The containing map area scrolls when both tables do not fit vertically.
-    let h = (w * 0.72).clamp(14.0, 24.0);
+    let h = (w * 0.72).clamp(8.0, 24.0);
     let size = Vec2::new(left + nx as f32 * w + 6.0, top + ny as f32 * h + 6.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);

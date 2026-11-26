@@ -1,12 +1,30 @@
 use eframe::egui::{self, Pos2, Rect, Response, Shape, Stroke, Vec2};
 
-/// Paint the Octocat mark in the Log Viewer menu trigger.
+/// Paint the round waveform mark in the Log Viewer menu trigger.
 pub fn paint_logo(ui: &egui::Ui, button: Rect) {
     let center = button.center();
-    let color = ui.visuals().text_color();
+    let color = egui::Color32::from_rgb(90, 205, 225);
     let painter = ui.painter();
-    let at = |x: f32, y: f32| center + Vec2::new(x, y);
-    let limb = Stroke::new(2.4, color);
+    painter.circle_stroke(center, 9.0, Stroke::new(1.6, color));
+    let points = [
+        (-5.5, 0.5),
+        (-3.0, 0.5),
+        (-1.3, -3.6),
+        (1.1, 4.0),
+        (3.0, -1.2),
+        (5.5, -1.2),
+    ]
+    .into_iter()
+    .map(|(x, y)| center + Vec2::new(x, y))
+    .collect();
+    painter.add(Shape::line(points, Stroke::new(1.7, color)));
+}
+
+fn paint_octocat(painter: &egui::Painter, rect: Rect, color: egui::Color32) {
+    let center = rect.center();
+    let scale = (rect.width() / 16.0).min(rect.height() / 16.0);
+    let at = |x: f32, y: f32| center + Vec2::new(x * scale, y * scale);
+    let limb = Stroke::new(2.2 * scale, color);
     for points in [
         vec![at(-2.0, 1.5), at(-6.0, 0.5), at(-7.0, 3.5)],
         vec![at(2.0, 1.5), at(6.0, 0.5), at(7.0, 3.5)],
@@ -26,7 +44,7 @@ pub fn paint_logo(ui: &egui::Ui, button: Rect) {
         color,
         Stroke::NONE,
     ));
-    painter.circle_filled(at(0.0, -1.8), 5.2, color);
+    painter.circle_filled(at(0.0, -1.8), 5.2 * scale, color);
     painter.add(Shape::convex_polygon(
         [
             (-3.0, 1.0),
@@ -61,6 +79,7 @@ pub enum Icon {
     Sun,
     HeatmapColor,
     HeatmapGray,
+    Octocat,
 }
 
 /// Draw a small vector icon so controls look the same with bundled fonts,
@@ -71,7 +90,11 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, selected: bool) -> R
         egui::Button::new("").selected(selected),
     );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, tooltip));
-    let rect = response.rect.shrink(6.0);
+    let rect = if matches!(icon, Icon::Octocat) {
+        response.rect.shrink(4.0)
+    } else {
+        response.rect.shrink(6.0)
+    };
     let color = ui.visuals().text_color();
     let stroke = Stroke::new(1.7, color);
     let center = rect.center();
@@ -222,6 +245,7 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, selected: bool) -> R
                 painter.rect_filled(Rect::from_min_size(top_left, cell), 0.5, color);
             }
         }
+        Icon::Octocat => paint_octocat(painter, rect, color),
     }
     response.on_hover_text(tooltip)
 }
