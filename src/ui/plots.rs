@@ -607,6 +607,7 @@ pub fn show_time_series(
                     0.0
                 };
                 let mut plot = Plot::new(("series", group_id, panel))
+                    .allow_scroll(false)
                     .height(if group.stacked { 180.0 } else { 260.0 })
                     .width((ui.available_width() - 2.0 * axis_padding).max(40.0))
                     .legend(Legend::default())
@@ -857,6 +858,7 @@ pub fn show_scatter(ui: &mut egui::Ui, data: &Dataset, playback: &Playback, stat
         ui.label(format!("{:.1} O2", state.high));
     });
     let mut plot = Plot::new("afr-scatter")
+        .allow_scroll(false)
         .height(280.0)
         .x_axis_label("RPM (rpm)")
         .y_axis_label("MAP (kpa)");
