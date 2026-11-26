@@ -50,8 +50,12 @@ jobs:
       - uses: DeterminateSystems/nix-installer-action@v17
       - uses: DeterminateSystems/magic-nix-cache-action@v8
       - run: nix build .#web
+      - name: Prepare Pages directory
+        run: |
+          mkdir -p _site
+          cp -rL result/. _site/
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: result
+          path: _site
       - id: deployment
         uses: actions/deploy-pages@v4
