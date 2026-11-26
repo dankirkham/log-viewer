@@ -33,6 +33,8 @@ pub enum Icon {
     Pause,
     Moon,
     Sun,
+    HeatmapColor,
+    HeatmapGray,
 }
 
 /// Draw a small vector icon so controls look the same with bundled fonts,
@@ -169,6 +171,30 @@ pub fn button(ui: &mut egui::Ui, icon: Icon, tooltip: &str, selected: bool) -> R
                 7.0,
                 ui.visuals().widgets.inactive.bg_fill,
             );
+        }
+        Icon::HeatmapColor | Icon::HeatmapGray => {
+            let colors = if matches!(icon, Icon::HeatmapColor) {
+                [
+                    egui::Color32::from_rgb(48, 18, 59),
+                    egui::Color32::from_rgb(70, 107, 241),
+                    egui::Color32::from_rgb(40, 188, 130),
+                    egui::Color32::from_rgb(242, 230, 60),
+                ]
+            } else {
+                [
+                    egui::Color32::from_gray(45),
+                    egui::Color32::from_gray(100),
+                    egui::Color32::from_gray(160),
+                    egui::Color32::from_gray(220),
+                ]
+            };
+            let cell = Vec2::new((rect.width() - 2.0) * 0.5, (rect.height() - 2.0) * 0.5);
+            for (index, color) in colors.into_iter().enumerate() {
+                let column = (index % 2) as f32;
+                let row = (index / 2) as f32;
+                let top_left = rect.min + Vec2::new(column * (cell.x + 2.0), row * (cell.y + 2.0));
+                painter.rect_filled(Rect::from_min_size(top_left, cell), 0.5, color);
+            }
         }
     }
     response.on_hover_text(tooltip)

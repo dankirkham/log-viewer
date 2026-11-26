@@ -63,6 +63,7 @@ struct GaugeSettings {
     maps: ui::maps::MapPreferences,
     speed: f64,
     dark_theme: bool,
+    follows_system_theme: bool,
     plots_tab: bool,
 }
 impl Default for GaugeSettings {
@@ -74,6 +75,7 @@ impl Default for GaugeSettings {
             maps: ui::maps::MapPreferences::default(),
             speed: 1.0,
             dark_theme: true,
+            follows_system_theme: true,
             plots_tab: false,
         }
     }
@@ -103,6 +105,181 @@ fn initial_gauges(data: &Dataset) -> Vec<ui::gauges::Gauge> {
     })
     .filter_map(|id| ui::gauges::Gauge::from_field(data, id))
     .collect()
+}
+
+fn show_fields(
+    ui: &mut egui::Ui,
+    data: &Dataset,
+    playback: &playback::Playback,
+    search: &mut String,
+    gauges: &mut Vec<ui::gauges::Gauge>,
+) -> bool {
+    let mut reset = false;
+    ui.horizontal(|ui| {
+        ui.heading("Fields");
+        reset = ui.button("Reset all settings").clicked();
+    });
+    ui.horizontal(|ui| {
+        ui.label("Find field:");
+        ui.text_edit_singleline(search);
+    });
+    egui::ScrollArea::both()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            egui::Grid::new("fields")
+                .striped(true)
+                .min_col_width(12.0)
+                .show(ui, |ui| {
+                    ui.strong("+");
+                    ui.strong("Field");
+                    ui.strong("Unit");
+                    ui.strong("Value");
+                    ui.end_row();
+                    let search = search.to_lowercase();
+                    for field in &data.fields {
+                        if !field.name.to_lowercase().contains(&search) {
+                            continue;
+                        }
+                        if ui
+                            .add_enabled(
+                                matches!(field.kind, log::FieldKind::Numeric { .. }),
+                                egui::Button::new("+").small(),
+                            )
+                            .on_hover_text("Add this field to the Gauges tab")
+                            .clicked()
+                        {
+                            if let Some(gauge) = ui::gauges::Gauge::from_field(data, field.id) {
+                                gauges.push(gauge);
+                            }
+                        }
+                        ui.label(if field.name.is_empty() {
+                            format!("(unnamed {})", field.id)
+                        } else {
+                            field.name.clone()
+                        });
+                        ui.label(&field.unit);
+                        match playback
+                            .sample_index
+                            .and_then(|index| data.columns[field.id][index])
+                        {
+                            Some(value) => {
+                                ui.label(ui::maps::format_table_number(value))
+                                    .on_hover_text(format!("Full parsed value: {value}"));
+                            }
+                            None => {
+                                ui.label("N/A");
+                            }
+                        }
+                        ui.end_row();
+                    }
+                });
+        });
+    reset
+}
+
+fn show_maps(
+    ui: &mut egui::Ui,
+    data: &Dataset,
+    playback: &playback::Playback,
+    map_state: &ui::maps::MapState,
+    map_prefs: &mut ui::maps::MapPreferences,
+    plots: &mut ui::plots::PlotState,
+    mobile: bool,
+) {
+    ui.horizontal(|ui| {
+        let icon = if map_prefs.heatmap {
+            ui::icons::Icon::HeatmapColor
+        } else {
+            ui::icons::Icon::HeatmapGray
+        };
+        let tooltip = if map_prefs.heatmap {
+            "Use grayscale table cells"
+        } else {
+            "Use colored table heatmap"
+        };
+        if ui::icons::button(ui, icon, tooltip, map_prefs.heatmap).clicked() {
+            map_prefs.heatmap = !map_prefs.heatmap;
+        }
+        ui.add(egui::Slider::new(&mut map_prefs.trail_seconds, 0.1..=60.0).text("Trail seconds"));
+    });
+    let mut contents = |ui: &mut egui::Ui| {
+        if mobile {
+            egui::ScrollArea::horizontal()
+                .id_salt("mobile-map-tables")
+                .show(ui, |ui| {
+                    show_map_tables(ui, data, playback, map_state, map_prefs, plots)
+                });
+        } else {
+            show_map_tables(ui, data, playback, map_state, map_prefs, plots);
+        }
+    };
+    contents(ui);
+}
+
+fn show_map_tables(
+    ui: &mut egui::Ui,
+    data: &Dataset,
+    playback: &playback::Playback,
+    map_state: &ui::maps::MapState,
+    map_prefs: &mut ui::maps::MapPreferences,
+    plots: &mut ui::plots::PlotState,
+) {
+    ui::maps::ve_panel(ui, Some(data), playback, map_state, map_prefs);
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.selectable_value(&mut plots.scatter_tab, false, "AFR table");
+        ui.selectable_value(&mut plots.scatter_tab, true, "Scatter plot");
+    });
+    if plots.scatter_tab {
+        ui::plots::show_scatter(ui, data, playback, plots);
+    } else {
+        ui::maps::afr_panel(ui, Some(data), playback, map_state, map_prefs);
+    }
+}
+
+fn show_gauges(
+    ui: &mut egui::Ui,
+    data: &Dataset,
+    playback: &playback::Playback,
+    gauges: &mut Vec<ui::gauges::Gauge>,
+) {
+    ui.horizontal(|ui| {
+        ui.heading("Gauges");
+        if ui.button("Reset gauge layout").clicked() {
+            *gauges = initial_gauges(data);
+        }
+    });
+    if gauges.is_empty() {
+        ui.label("Add numeric fields from the Fields panel to create gauges.");
+    }
+    let change = ui::gauges::show_wrapped(ui, gauges, data, playback.sample_index);
+    if let Some((i, action)) = change {
+        match action {
+            ui::gauges::Action::Remove => {
+                gauges.remove(i);
+            }
+            ui::gauges::Action::Up if i > 0 => gauges.swap(i, i - 1),
+            ui::gauges::Action::Down if i + 1 < gauges.len() => gauges.swap(i, i + 1),
+            _ => {}
+        }
+    }
+}
+
+fn show_plots(
+    ui: &mut egui::Ui,
+    data: &Dataset,
+    playback: &playback::Playback,
+    plots: &mut ui::plots::PlotState,
+) -> Option<f64> {
+    let seek = ui::plots::show_time_series(ui, data, playback, plots);
+    if !data.metadata.derived_diagnostics.is_empty() {
+        egui::CollapsingHeader::new("Unavailable derived fields").show(ui, |ui| {
+            for diagnostic in &data.metadata.derived_diagnostics {
+                ui.label(diagnostic);
+            }
+        });
+    }
+    seek
 }
 
 impl LogViewer {
@@ -487,10 +664,10 @@ impl eframe::App for LogViewer {
             self.loading = Some(receiver);
         }
         if !self.theme_applied {
-            ctx.set_visuals(if self.settings.dark_theme {
-                egui::Visuals::dark()
+            ctx.set_theme(if self.settings.follows_system_theme {
+                egui::ThemePreference::System
             } else {
-                egui::Visuals::light()
+                egui::Theme::from_dark_mode(self.settings.dark_theme).into()
             });
             self.theme_applied = true;
         }
@@ -617,16 +794,19 @@ impl eframe::App for LogViewer {
                     ui.label(notice);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let (icon, tip) = if self.settings.dark_theme {
+                    let dark_theme = ctx.theme() == egui::Theme::Dark;
+                    let (icon, tip) = if dark_theme {
                         (ui::icons::Icon::Sun, "Switch to light theme")
                     } else {
                         (ui::icons::Icon::Moon, "Switch to dark theme")
                     };
                     if ui::icons::button(ui, icon, tip, false).clicked() {
-                        self.settings.dark_theme = !self.settings.dark_theme;
-                        self.theme_applied = false;
+                        self.settings.dark_theme = !dark_theme;
+                        self.settings.follows_system_theme = false;
+                        ctx.set_theme(egui::Theme::from_dark_mode(self.settings.dark_theme));
                         ctx.request_repaint();
                     }
+                    ui.hyperlink_to("GitHub", "https://github.com/dankirkham/log-viewer");
                 });
             });
         });
@@ -680,170 +860,49 @@ impl eframe::App for LogViewer {
                 }
             }
         });
+        let mobile = ctx.input(|input| input.screen_rect.width() < 1100.0);
         let mut plot_seek = None;
-        if self.dataset.is_some() {
-            egui::SidePanel::left("field-values")
-                .default_width(330.0)
-                .min_width(250.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.heading("Fields");
-                    ui.horizontal(|ui| {
-                        if ui.button("Reset all settings").clicked() {
-                            self.settings = GaugeSettings::default();
-                            self.plots = ui::plots::PlotState::default();
-                            if let Some(data) = &self.dataset {
-                                self.settings.gauges = initial_gauges(data);
-                                self.settings.initialized = true;
-                                self.plots.initialize_defaults(data);
-                            }
-                            self.playback.set_speed(1.0);
-                            self.theme_applied = false;
-                            ctx.memory_mut(|memory| *memory = egui::Memory::default());
-                            ctx.request_repaint();
-                        }
-                    });
-                    if let Some(error) = &self.error {
-                        ui.colored_label(
-                            egui::Color32::LIGHT_RED,
-                            format!("Could not load log: {error}"),
-                        );
-                    }
-                    if let Some(data) = &self.dataset {
-                        ui.horizontal(|ui| {
-                            ui.label("Find field:");
-                            ui.text_edit_singleline(&mut self.search);
-                        });
-                        egui::ScrollArea::both()
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                egui::Grid::new("fields")
-                                    .striped(true)
-                                    .min_col_width(12.0)
-                                    .show(ui, |ui| {
-                                        ui.strong("+");
-                                        ui.strong("Field");
-                                        ui.strong("Unit");
-                                        ui.strong("Value");
-                                        ui.end_row();
-                                        let search = self.search.to_lowercase();
-                                        for field in &data.fields {
-                                            if !field.name.to_lowercase().contains(&search) {
-                                                continue;
-                                            }
-                                            if ui
-                                                .add_enabled(
-                                                    matches!(
-                                                        field.kind,
-                                                        log::FieldKind::Numeric { .. }
-                                                    ),
-                                                    egui::Button::new("+").small(),
-                                                )
-                                                .on_hover_text("Add this field to the Gauges tab")
-                                                .clicked()
-                                            {
-                                                if let Some(gauge) =
-                                                    ui::gauges::Gauge::from_field(data, field.id)
-                                                {
-                                                    self.settings.gauges.push(gauge);
-                                                }
-                                            }
-                                            ui.label(if field.name.is_empty() {
-                                                format!("(unnamed {})", field.id)
-                                            } else {
-                                                field.name.clone()
-                                            });
-                                            ui.label(&field.unit);
-                                            match self
-                                                .playback
-                                                .sample_index
-                                                .and_then(|index| data.columns[field.id][index])
-                                            {
-                                                Some(value) => {
-                                                    ui.label(ui::maps::format_table_number(value))
-                                                        .on_hover_text(format!(
-                                                            "Full parsed value: {value}"
-                                                        ));
-                                                }
-                                                None => {
-                                                    ui.label("N/A");
-                                                }
-                                            }
-                                            ui.end_row();
-                                        }
-                                    });
-                            });
-                    }
-                });
-            egui::SidePanel::right("map-panels")
-                .default_width(560.0)
-                .min_width(350.0)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.settings.maps.heatmap, "Table heatmap");
-                        ui.add(
-                            egui::Slider::new(&mut self.settings.maps.trail_seconds, 0.1..=60.0)
-                                .text("Trail seconds"),
+        let mut reset_all = false;
+        if !mobile {
+            if let Some(data) = &self.dataset {
+                egui::SidePanel::left("map-panels")
+                    .default_width(560.0)
+                    .min_width(350.0)
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        show_maps(
+                            ui,
+                            data,
+                            &self.playback,
+                            &self.maps,
+                            &mut self.settings.maps,
+                            &mut self.plots,
+                            false,
                         );
                     });
-                    let panel_height = (ui.available_height() - 8.0) * 0.5;
-                    ui.allocate_ui_with_layout(
-                        egui::Vec2::new(ui.available_width(), panel_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui::maps::ve_panel(
-                                ui,
-                                self.dataset.as_ref(),
-                                &self.playback,
-                                &self.maps,
-                                &mut self.settings.maps,
+                egui::SidePanel::right("field-values")
+                    .default_width(330.0)
+                    .min_width(250.0)
+                    .resizable(true)
+                    .show(ctx, |ui| {
+                        if let Some(error) = &self.error {
+                            ui.colored_label(
+                                egui::Color32::LIGHT_RED,
+                                format!("Could not load log: {error}"),
                             );
-                        },
-                    );
-                    ui.separator();
-                    ui.allocate_ui_with_layout(
-                        egui::Vec2::new(ui.available_width(), panel_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            ui.horizontal(|ui| {
-                                ui.selectable_value(
-                                    &mut self.plots.scatter_tab,
-                                    false,
-                                    "AFR table",
-                                );
-                                ui.selectable_value(
-                                    &mut self.plots.scatter_tab,
-                                    true,
-                                    "Scatter plot",
-                                );
-                            });
-                            if self.plots.scatter_tab {
-                                if let Some(data) = &self.dataset {
-                                    ui::plots::show_scatter(
-                                        ui,
-                                        data,
-                                        &self.playback,
-                                        &mut self.plots,
-                                    );
-                                } else {
-                                    ui.label("Open a log to inspect the RPM/MAP scatter plot.");
-                                }
-                            } else {
-                                ui::maps::afr_panel(
-                                    ui,
-                                    self.dataset.as_ref(),
-                                    &self.playback,
-                                    &self.maps,
-                                    &mut self.settings.maps,
-                                );
-                            }
-                        },
-                    );
-                });
+                        }
+                        reset_all = show_fields(
+                            ui,
+                            data,
+                            &self.playback,
+                            &mut self.search,
+                            &mut self.settings.gauges,
+                        );
+                    });
+            }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
-            if self.dataset.is_none() {
+            let Some(data) = &self.dataset else {
                 let rect = egui::Rect::from_center_size(
                     ui.available_rect_before_wrap().center(),
                     egui::Vec2::new(164.0, 40.0),
@@ -852,75 +911,83 @@ impl eframe::App for LogViewer {
                     self.open(ctx);
                 }
                 return;
-            }
-            ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.settings.plots_tab, false, "Gauges");
-                ui.selectable_value(&mut self.settings.plots_tab, true, "Plots");
-            });
-            ui.separator();
-            egui::ScrollArea::vertical()
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if let Some(data) = &self.dataset {
-                        if self.settings.plots_tab {
-                            plot_seek = ui::plots::show_time_series(
-                                ui,
-                                data,
-                                &self.playback,
-                                &mut self.plots,
-                            );
-                            if !data.metadata.derived_diagnostics.is_empty() {
-                                egui::CollapsingHeader::new("Unavailable derived fields").show(
+            };
+            if mobile {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        egui::CollapsingHeader::new("VE/AFR map")
+                            .id_salt("mobile-map-section")
+                            .default_open(true)
+                            .show(ui, |ui| {
+                                show_maps(
                                     ui,
-                                    |ui| {
-                                        for diagnostic in &data.metadata.derived_diagnostics {
-                                            ui.label(diagnostic);
-                                        }
-                                    },
+                                    data,
+                                    &self.playback,
+                                    &self.maps,
+                                    &mut self.settings.maps,
+                                    &mut self.plots,
+                                    true,
                                 );
-                            }
-                        } else {
-                            ui.horizontal(|ui| {
-                                ui.heading("Gauges");
-                                if ui.button("Reset gauge layout").clicked() {
-                                    self.settings.gauges = initial_gauges(data);
-                                }
                             });
-                            if self.settings.gauges.is_empty() {
-                                ui.label(
-                                    "Add numeric fields from the left panel to create gauges.",
+                        egui::CollapsingHeader::new("Gauges")
+                            .id_salt("mobile-gauges-section")
+                            .show(ui, |ui| {
+                                show_gauges(ui, data, &self.playback, &mut self.settings.gauges);
+                            });
+                        egui::CollapsingHeader::new("Plots")
+                            .id_salt("mobile-plots-section")
+                            .show(ui, |ui| {
+                                plot_seek = show_plots(ui, data, &self.playback, &mut self.plots);
+                            });
+                        egui::CollapsingHeader::new("Fields")
+                            .id_salt("mobile-fields-section")
+                            .show(ui, |ui| {
+                                reset_all = show_fields(
+                                    ui,
+                                    data,
+                                    &self.playback,
+                                    &mut self.search,
+                                    &mut self.settings.gauges,
                                 );
-                            }
-                            let change = ui::gauges::show_wrapped(
-                                ui,
-                                &mut self.settings.gauges,
-                                data,
-                                self.playback.sample_index,
-                            );
-                            if let Some((i, action)) = change {
-                                match action {
-                                    ui::gauges::Action::Remove => {
-                                        self.settings.gauges.remove(i);
-                                    }
-                                    ui::gauges::Action::Up if i > 0 => {
-                                        self.settings.gauges.swap(i, i - 1)
-                                    }
-                                    ui::gauges::Action::Down
-                                        if i + 1 < self.settings.gauges.len() =>
-                                    {
-                                        self.settings.gauges.swap(i, i + 1)
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                    } else {
-                        ui.label(
-                            "Open a supported .mlg binary log to inspect its recorded fields.",
-                        );
-                    }
+                            });
+                    });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut self.settings.plots_tab, false, "Gauges");
+                    ui.selectable_value(&mut self.settings.plots_tab, true, "Plots");
                 });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        if self.settings.plots_tab {
+                            plot_seek = show_plots(ui, data, &self.playback, &mut self.plots);
+                        } else {
+                            show_gauges(ui, data, &self.playback, &mut self.settings.gauges);
+                        }
+                    });
+            }
+            if let Some(error) = &self.error {
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    format!("Could not load log: {error}"),
+                );
+            }
         });
+        if reset_all {
+            self.settings = GaugeSettings::default();
+            self.plots = ui::plots::PlotState::default();
+            if let Some(data) = &self.dataset {
+                self.settings.gauges = initial_gauges(data);
+                self.settings.initialized = true;
+                self.plots.initialize_defaults(data);
+            }
+            self.playback.set_speed(1.0);
+            self.theme_applied = false;
+            ctx.memory_mut(|memory| *memory = egui::Memory::default());
+            ctx.request_repaint();
+        }
         if let (Some(time), Some(data)) = (plot_seek, &self.dataset) {
             self.playback.seek(time, data);
             ctx.request_repaint();
@@ -1051,6 +1118,7 @@ mod tests {
             },
             speed: 2.0,
             dark_theme: true,
+            follows_system_theme: true,
             plots_tab: true,
         };
         let mut storage = MemoryStorage::default();
