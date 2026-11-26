@@ -14,32 +14,34 @@ fn migrate_native_settings() {
         84, 117, 110, 101, 114, 83, 116, 117, 100, 105, 111, 32, 76, 111, 103, 32, 86, 105, 101,
         119, 101, 114,
     ];
-    let previous_id = String::from_utf8_lossy(&PREVIOUS_APP_ID);
-    let Some(previous_dir) = eframe::storage_dir(&previous_id) else {
-        return;
-    };
     let Some(current_dir) = eframe::storage_dir("ECU Log Viewer") else {
         return;
     };
-    let previous_path = previous_dir.join("app.ron");
+    let marker_path = current_dir.join("settings-migration-v1.done");
+    if marker_path.exists() {
+        return;
+    }
     let current_path = current_dir.join("app.ron");
-    if !previous_path.is_file() || previous_path == current_path {
+    if current_path.exists() {
+        let _ = std::fs::write(marker_path, b"done");
         return;
     }
 
-    let Ok(previous) = std::fs::read_to_string(&previous_path) else {
-        return;
-    };
-    if !previous.contains("plot-settings-v1") || !previous.contains("fields:[(") {
-        return;
+    let previous_id = String::from_utf8_lossy(&PREVIOUS_APP_ID);
+    if let Some(previous_dir) = eframe::storage_dir(&previous_id) {
+        let previous_path = previous_dir.join("app.ron");
+        if previous_path.is_file() && previous_path != current_path {
+            let populated = std::fs::read_to_string(&previous_path).is_ok_and(|previous| {
+                previous.contains("plot-settings-v1") && previous.contains("fields:[(")
+            });
+            if populated {
+                let _ = std::fs::create_dir_all(&current_dir);
+                let _ = std::fs::copy(previous_path, current_path);
+            }
+        }
     }
-    if std::fs::read_to_string(&current_path).is_ok_and(|current| current.contains("fields:[(")) {
-        return;
-    }
-    if let Some(parent) = current_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = std::fs::copy(previous_path, current_path);
+    let _ = std::fs::create_dir_all(&current_dir);
+    let _ = std::fs::write(marker_path, b"done");
 }
 
 #[cfg(target_arch = "wasm32")]
