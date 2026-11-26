@@ -101,6 +101,16 @@ fn local_original_fixture_when_requested() {
     assert!(log_viewer::analysis::maps::from_source(&d, "veTable2")
         .unwrap_err()
         .contains("Secondary fuel-load channel identity"));
+    let cropped = log_viewer::log::crop(&bytes, &d, 0.0, 10.0).unwrap();
+    let cropped_data = parse(&cropped).unwrap();
+    assert_eq!(cropped_data.metadata.info, d.metadata.info);
+    assert_eq!(
+        cropped_data.metadata.tune_constants.len(),
+        d.metadata.tune_constants.len()
+    );
+    assert_eq!(cropped_data.field_ids("AFR error (%)").len(), 1);
+    assert!(log_viewer::analysis::maps::from_source(&cropped_data, "afrTable").is_ok());
+    assert!(log_viewer::analysis::maps::from_source(&cropped_data, "veTable").is_ok());
     let sample = 10;
     let measured = d.columns[d.field_ids("AFR")[0]][sample].unwrap();
     let target = d.columns[d.field_ids("AFR Target")[0]][sample].unwrap();
