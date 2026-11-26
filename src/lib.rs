@@ -7,7 +7,24 @@ use eframe::egui;
 use log::Dataset;
 use std::sync::mpsc::{self, Receiver};
 
-type LoadResult = Result<Option<(String, Dataset, Option<f64>)>, String>;
+type LoadResult = Result<Option<LoadedLog>, String>;
+type ExportResult = Result<bool, String>;
+
+struct LoadedLog {
+    name: String,
+    bytes: Vec<u8>,
+    dataset: Dataset,
+    load_ms: Option<f64>,
+    sample_name: Option<String>,
+    auto_play: bool,
+}
+
+#[derive(Clone, Copy, Default)]
+struct LinkView {
+    playhead: Option<f64>,
+    start: Option<f64>,
+    end: Option<f64>,
+}
 
 #[cfg(all(target_arch = "wasm32", browser_smoke))]
 thread_local! {
@@ -18,9 +35,15 @@ thread_local! {
 #[derive(Default)]
 pub struct LogViewer {
     dataset: Option<Dataset>,
+    source_bytes: Vec<u8>,
     filename: String,
     error: Option<String>,
+    notice: Option<String>,
     loading: Option<Receiver<LoadResult>>,
+    exporting: Option<Receiver<ExportResult>>,
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    sample_name: Option<String>,
+    link_view: Option<LinkView>,
     search: String,
     playback: playback::Playback,
     settings: GaugeSettings,
@@ -58,9 +81,18 @@ impl Default for GaugeSettings {
 fn initial_gauges(data: &Dataset) -> Vec<ui::gauges::Gauge> {
     [
         ("RPM", "rpm"),
+        ("TPS", "%"),
+        ("PW", "ms"),
+        ("Duty Cycle", ""),
+        ("Advance _Current", "deg"),
+        ("IAT", ""),
+        ("CLT", ""),
         ("MAP", "kpa"),
         ("AFR", "O2"),
+        ("AFR Target", "O2"),
+        ("AFR error (%)", "%"),
         ("Battery V", "V"),
+        ("Gammae", "%"),
     ]
     .iter()
     .filter_map(|(name, unit)| {
@@ -89,14 +121,87 @@ impl LogViewer {
         plots.sanitize();
         let mut playback = playback::Playback::default();
         playback.set_speed(settings.speed);
-        Self {
+        let app = Self {
             settings,
             plots,
             playback,
             ..Self::default()
+        };
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut app = app;
+            app.load_sample_link(cc.egui_ctx.clone());
+            app
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut app = app;
+            app.load_default_demo();
+            app
         }
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    fn load_default_demo(&mut self) {
+        let bytes = include_bytes!("../samples/demo.mlg").to_vec();
+        if let Ok(data) = log::parse(&bytes) {
+            self.install_loaded(LoadedLog {
+                name: "demo.mlg".into(),
+                bytes,
+                dataset: data,
+                load_ms: None,
+                sample_name: Some("demo.mlg".into()),
+                auto_play: true,
+            });
+        }
+    }
+    fn install_loaded(&mut self, loaded: LoadedLog) {
+        let LoadedLog {
+            name,
+            bytes,
+            dataset: data,
+            load_ms,
+            sample_name,
+            auto_play,
+        } = loaded;
+        self.filename = name;
+        self.source_bytes = bytes;
+        self.sample_name = sample_name;
+        self.playback.reset(&data);
+        if let Some(view) = self.link_view.take() {
+            let duration = data.duration();
+            if view.start.is_some() || view.end.is_some() {
+                let start = view.start.unwrap_or(0.0).min(duration);
+                let end = view.end.unwrap_or(duration).min(duration);
+                if start < end {
+                    self.plots.set_time_range(Some([start, end]));
+                }
+            }
+            if let Some(position) = view.playhead {
+                self.playback.seek(position.min(duration), &data);
+            }
+        }
+        self.plots.clear_dataset_cache();
+        self.plots.initialize_defaults(&data);
+        self.maps.load(&data);
+        if !self.settings.initialized {
+            self.settings.gauges = initial_gauges(&data);
+            self.settings.initialized = true;
+        }
+        if auto_play {
+            self.playback.toggle(&data);
+        }
+        self.dataset = Some(data);
+        #[cfg(all(target_arch = "wasm32", browser_smoke))]
+        {
+            self.smoke_load_ms = load_ms;
+        }
+        #[cfg(not(all(target_arch = "wasm32", browser_smoke)))]
+        let _ = load_ms;
+        self.error = None;
+        self.notice = None;
+    }
     fn open(&mut self, ctx: &egui::Context) {
+        self.link_view = None;
         let (tx, rx) = mpsc::channel();
         self.loading = Some(rx);
         let ctx = ctx.clone();
@@ -114,7 +219,18 @@ impl LogViewer {
                         .into_owned();
                     std::fs::read(&path)
                         .map_err(|e| format!("Could not read {name}: {e}"))
-                        .and_then(|bytes| log::parse(&bytes).map(|data| Some((name, data, None))))
+                        .and_then(|bytes| {
+                            log::parse(&bytes).map(|dataset| {
+                                Some(LoadedLog {
+                                    name,
+                                    bytes,
+                                    dataset,
+                                    load_ms: None,
+                                    sample_name: None,
+                                    auto_play: false,
+                                })
+                            })
+                        })
                 }
                 None => Ok(None),
             };
@@ -135,7 +251,7 @@ impl LogViewer {
                         .and_then(|window| window.performance())
                         .map(|performance| performance.now());
                     let bytes = file.read().await;
-                    log::parse(&bytes).map(|data| {
+                    log::parse(&bytes).map(|dataset| {
                         let elapsed = {
                             #[cfg(browser_smoke)]
                             {
@@ -150,7 +266,14 @@ impl LogViewer {
                                 None
                             }
                         };
-                        Some((name, data, elapsed))
+                        Some(LoadedLog {
+                            name,
+                            bytes,
+                            dataset,
+                            load_ms: elapsed,
+                            sample_name: None,
+                            auto_play: false,
+                        })
                     })
                 }
                 None => Ok(None),
@@ -159,6 +282,182 @@ impl LogViewer {
             ctx.request_repaint();
         });
     }
+
+    fn export_crop(&mut self, ctx: &egui::Context) {
+        let Some(data) = &self.dataset else { return };
+        let range = self.plots.time_range().unwrap_or([0.0, data.duration()]);
+        let bytes = match log::crop(&self.source_bytes, data, range[0], range[1]) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        let stem = std::path::Path::new(&self.filename)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .filter(|stem| !stem.is_empty())
+            .unwrap_or("log");
+        let suggested_name = format!("{stem}-crop.mlg");
+        let (tx, rx) = mpsc::channel();
+        self.exporting = Some(rx);
+        let ctx = ctx.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        std::thread::spawn(move || {
+            let result = rfd::FileDialog::new()
+                .add_filter("ECU log", &["mlg"])
+                .set_file_name(&suggested_name)
+                .save_file()
+                .map(|path| {
+                    std::fs::write(path, bytes)
+                        .map(|()| true)
+                        .map_err(|error| format!("Could not save cropped log: {error}"))
+                })
+                .unwrap_or(Ok(false));
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+        #[cfg(target_arch = "wasm32")]
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = match rfd::AsyncFileDialog::new()
+                .add_filter("ECU log", &["mlg"])
+                .set_file_name(&suggested_name)
+                .save_file()
+                .await
+            {
+                Some(file) => file
+                    .write(&bytes)
+                    .await
+                    .map(|()| true)
+                    .map_err(|error| format!("Could not save cropped log: {error}")),
+                None => Ok(false),
+            };
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn load_sample_link(&mut self, ctx: egui::Context) {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let search = match window.location().search() {
+            Ok(search) => search,
+            Err(_) => return,
+        };
+        let Ok(params) = web_sys::UrlSearchParams::new_with_str(&search) else {
+            self.error = Some("Could not read sample-link parameters".into());
+            return;
+        };
+        let name = params.get("sample").unwrap_or_else(|| "demo.mlg".into());
+        if !valid_sample_name(&name) {
+            self.error = Some("Sample name must be a .mlg filename without a path".into());
+            return;
+        }
+        let parse_time = |key: &str| -> Result<Option<f64>, String> {
+            params
+                .get(key)
+                .map(|value| {
+                    value
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|time| time.is_finite() && *time >= 0.0)
+                        .ok_or_else(|| format!("Invalid {key} time in sample link"))
+                })
+                .transpose()
+        };
+        let view = match (
+            parse_time("playhead"),
+            parse_time("start"),
+            parse_time("end"),
+        ) {
+            (Ok(playhead), Ok(start), Ok(end)) => LinkView {
+                playhead,
+                start,
+                end,
+            },
+            (Err(error), _, _) | (_, Err(error), _) | (_, _, Err(error)) => {
+                self.error = Some(error);
+                return;
+            }
+        };
+        if view
+            .start
+            .zip(view.end)
+            .is_some_and(|(start, end)| start >= end)
+        {
+            self.error = Some("Sample-link range start must be before end".into());
+            return;
+        }
+        self.sample_name = Some(name.clone());
+        self.link_view = Some(view);
+        let (tx, rx) = mpsc::channel();
+        self.loading = Some(rx);
+        wasm_bindgen_futures::spawn_local(async move {
+            use web_sys::wasm_bindgen::JsCast;
+            let result = async {
+                let path = format!("./samples/{name}");
+                let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&path))
+                    .await
+                    .map_err(|error| format!("Could not fetch sample: {error:?}"))?
+                    .dyn_into::<web_sys::Response>()
+                    .map_err(|_| "Sample request returned an invalid response".to_owned())?;
+                if !response.ok() {
+                    return Err(format!("Sample {name} returned HTTP {}", response.status()));
+                }
+                let buffer = wasm_bindgen_futures::JsFuture::from(
+                    response
+                        .array_buffer()
+                        .map_err(|error| format!("Could not read sample response: {error:?}"))?,
+                )
+                .await
+                .map_err(|error| format!("Could not read sample bytes: {error:?}"))?;
+                let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                let dataset = log::parse(&bytes)?;
+                Ok(LoadedLog {
+                    name: name.clone(),
+                    bytes,
+                    dataset,
+                    load_ms: None,
+                    sample_name: Some(name),
+                    auto_play: true,
+                })
+            }
+            .await
+            .map(Some);
+            let _ = tx.send(result);
+            ctx.request_repaint();
+        });
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn copy_sample_link(&self, ctx: &egui::Context) {
+        let (Some(name), Some(data)) = (&self.sample_name, &self.dataset) else {
+            return;
+        };
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let Ok(href) = window.location().href() else {
+            return;
+        };
+        let base = href.split(['?', '#']).next().unwrap_or(&href);
+        let range = self.plots.time_range().unwrap_or([0.0, data.duration()]);
+        ctx.copy_text(format!(
+            "{base}?sample={name}&playhead={:.3}&start={:.3}&end={:.3}",
+            self.playback.position, range[0], range[1]
+        ));
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+fn valid_sample_name(name: &str) -> bool {
+    name.ends_with(".mlg")
+        && name[..name.len().saturating_sub(4)]
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        && name.len() > 4
 }
 impl eframe::App for LogViewer {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -173,10 +472,17 @@ impl eframe::App for LogViewer {
                 let ended = web_sys::window()
                     .and_then(|window| window.performance())
                     .map_or(started, |performance| performance.now());
-                (name, dataset, Some(ended - started))
+                LoadedLog {
+                    name,
+                    bytes,
+                    dataset,
+                    load_ms: Some(ended - started),
+                    sample_name: None,
+                    auto_play: false,
+                }
             });
             let (sender, receiver) = mpsc::channel();
-            let result = load_ms.map(|(name, dataset, elapsed)| Some((name, dataset, elapsed)));
+            let result = load_ms.map(Some);
             let _ = sender.send(result);
             self.loading = Some(receiver);
         }
@@ -193,21 +499,8 @@ impl eframe::App for LogViewer {
                 Ok(result) => {
                     self.loading = None;
                     match result {
-                        Ok(Some((name, data, _load_ms))) => {
-                            self.filename = name;
-                            self.playback.reset(&data);
-                            self.plots.clear_dataset_cache();
-                            self.maps.load(&data);
-                            if !self.settings.initialized {
-                                self.settings.gauges = initial_gauges(&data);
-                                self.settings.initialized = true;
-                            }
-                            self.dataset = Some(data);
-                            #[cfg(all(target_arch = "wasm32", browser_smoke))]
-                            {
-                                self.smoke_load_ms = _load_ms;
-                            }
-                            self.error = None;
+                        Ok(Some(loaded)) => {
+                            self.install_loaded(loaded);
                         }
                         Ok(None) => {}
                         Err(e) => self.error = Some(e),
@@ -216,6 +509,26 @@ impl eframe::App for LogViewer {
                 Err(mpsc::TryRecvError::Disconnected) => {
                     self.loading = None;
                     self.error = Some("File selection failed unexpectedly".into());
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        if let Some(rx) = &self.exporting {
+            match rx.try_recv() {
+                Ok(result) => {
+                    self.exporting = None;
+                    match result {
+                        Ok(true) => {
+                            self.error = None;
+                            self.notice = Some("Cropped log saved".into());
+                        }
+                        Ok(false) => {}
+                        Err(error) => self.error = Some(error),
+                    }
+                }
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    self.exporting = None;
+                    self.error = Some("Crop export did not complete".into());
                 }
                 Err(mpsc::TryRecvError::Empty) => {}
             }
@@ -248,7 +561,49 @@ impl eframe::App for LogViewer {
         }
         egui::TopBottomPanel::top("app-header").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("Log Viewer");
+                let logo_menu = egui::menu::menu_custom_button(
+                    ui,
+                    egui::Button::new("")
+                        .min_size(egui::vec2(34.0, 34.0))
+                        .corner_radius(17.0),
+                    |ui| {
+                        if ui
+                            .add_enabled(self.loading.is_none(), egui::Button::new("Open log…"))
+                            .clicked()
+                        {
+                            ui.close_menu();
+                            self.open(ctx);
+                        }
+                        if let Some(data) = &self.dataset {
+                            let range = self.plots.time_range().unwrap_or([0.0, data.duration()]);
+                            let rows = data.time_range(range[0], range[1]).len();
+                            if ui
+                                .add_enabled(
+                                    self.exporting.is_none(),
+                                    egui::Button::new(format!("Export crop ({rows} samples)…")),
+                                )
+                                .on_hover_text(
+                                    "Save only recorded samples inside the blue timeline range",
+                                )
+                                .clicked()
+                            {
+                                ui.close_menu();
+                                self.export_crop(ctx);
+                            }
+                        }
+                        #[cfg(target_arch = "wasm32")]
+                        if self.sample_name.is_some()
+                            && ui
+                                .button("Copy sample link at current time and range")
+                                .clicked()
+                        {
+                            ui.close_menu();
+                            self.copy_sample_link(ctx);
+                        }
+                    },
+                );
+                ui::icons::paint_logo(ui, logo_menu.response.rect);
+                ui.label("Log Viewer");
                 ui.separator();
                 if !self.filename.is_empty() {
                     ui.add(egui::Label::new(&self.filename).truncate())
@@ -257,6 +612,9 @@ impl eframe::App for LogViewer {
                     ui.label("Loading log…");
                 } else {
                     ui.label("No log loaded");
+                }
+                if let Some(notice) = &self.notice {
+                    ui.label(notice);
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let (icon, tip) = if self.settings.dark_theme {
@@ -268,13 +626,6 @@ impl eframe::App for LogViewer {
                         self.settings.dark_theme = !self.settings.dark_theme;
                         self.theme_applied = false;
                         ctx.request_repaint();
-                    }
-                    if ui
-                        .add_enabled(self.loading.is_none(), egui::Button::new("Open"))
-                        .on_hover_text("Open a different log file")
-                        .clicked()
-                    {
-                        self.open(ctx);
                     }
                 });
             });
@@ -340,11 +691,12 @@ impl eframe::App for LogViewer {
                     ui.horizontal(|ui| {
                         if ui.button("Reset all settings").clicked() {
                             self.settings = GaugeSettings::default();
+                            self.plots = ui::plots::PlotState::default();
                             if let Some(data) = &self.dataset {
                                 self.settings.gauges = initial_gauges(data);
                                 self.settings.initialized = true;
+                                self.plots.initialize_defaults(data);
                             }
-                            self.plots = ui::plots::PlotState::default();
                             self.playback.set_speed(1.0);
                             self.theme_applied = false;
                             ctx.memory_mut(|memory| *memory = egui::Memory::default());

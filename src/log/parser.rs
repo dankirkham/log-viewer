@@ -439,3 +439,61 @@ pub fn parse(bytes: &[u8]) -> Result<Dataset, String> {
     crate::analysis::derived::install(&mut data);
     Ok(data)
 }
+
+/// Copy recorded blocks in an elapsed-time interval into a new valid container.
+/// The interval is inclusive and uses the same zero-based time axis as the timeline.
+pub fn crop(bytes: &[u8], dataset: &Dataset, start: f64, end: f64) -> Result<Vec<u8>, String> {
+    if !start.is_finite() || !end.is_finite() || start < 0.0 || end < start {
+        return Err("Crop range must be finite, nonnegative, and ordered".into());
+    }
+    if dataset.timestamps.is_empty() {
+        return Err("Cannot crop a log with no recorded samples".into());
+    }
+    if start > dataset.duration() {
+        return Err("Crop range does not contain any recorded samples".into());
+    }
+    let first = start.min(dataset.duration());
+    let last = end.min(dataset.duration());
+    let selected = dataset.time_range(first, last);
+    if selected.is_empty() {
+        return Err("Crop range does not contain any recorded samples".into());
+    }
+
+    if bytes.len() < 24 || bytes[..6] != [0x4d, 0x4c, 0x56, 0x4c, 0x47, 0x00] {
+        return Err("Source bytes are not a supported binary log".into());
+    }
+    let data_start = u32be(&bytes[16..20]) as usize;
+    let record_len = u16be(&bytes[20..22]) as usize;
+    if data_start > bytes.len() {
+        return Err("Source log has an invalid data offset".into());
+    }
+    let mut output = bytes[..data_start].to_vec();
+    let mut pos = data_start;
+    let mut row = 0usize;
+    while pos < bytes.len() {
+        match bytes[pos] {
+            0 => {
+                let block_end = pos
+                    .checked_add(record_len + 5)
+                    .filter(|&end| end <= bytes.len())
+                    .ok_or("Truncated sample block while cropping")?;
+                if selected.contains(&row) {
+                    output.extend_from_slice(&bytes[pos..block_end]);
+                }
+                row += 1;
+                pos = block_end;
+            }
+            1 => {
+                pos = pos
+                    .checked_add(54)
+                    .filter(|&end| end <= bytes.len())
+                    .ok_or("Truncated marker while cropping")?;
+            }
+            _ => return Err("Unsupported block encountered while cropping".into()),
+        }
+    }
+    if row != dataset.timestamps.len() {
+        return Err("Sample count changed while cropping".into());
+    }
+    Ok(output)
+}

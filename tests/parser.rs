@@ -39,6 +39,19 @@ fn rows_lookup_duplicates_and_metadata() {
     assert_eq!(d.columns[1], [Some(1000.), Some(1000.), Some(1000.)]);
     assert!(matches!(d.fields[1].kind, FieldKind::Numeric { .. }));
 }
+
+#[test]
+fn crop_keeps_only_original_inclusive_rows_and_remains_parseable() {
+    let original = fixture(&[10., 10., 11.]);
+    let dataset = parse(&original).unwrap();
+    let cropped = log_viewer::log::crop(&original, &dataset, 0.0, 0.0).unwrap();
+    let result = parse(&cropped).unwrap();
+    assert_eq!(result.timestamps, [10.0, 10.0]);
+    assert_eq!(result.columns[result.field_ids("RPM")[0]], [Some(1000.); 2]);
+
+    let cropped = log_viewer::log::crop(&original, &dataset, 0.5, 0.9).unwrap_err();
+    assert!(cropped.contains("does not contain"));
+}
 #[test]
 fn rejects_decreasing_bad_crc_and_ambiguous_time() {
     assert!(parse(&fixture(&[1., 0.]))
@@ -160,6 +173,15 @@ fn sanitized_source_descriptors() {
         .fields
         .iter()
         .any(|f| matches!(f.kind, FieldKind::Bits { .. })));
+}
+
+#[test]
+fn bundled_demo_is_parseable_without_capture_or_tune_metadata() {
+    let data = parse(include_bytes!("../samples/demo.mlg")).unwrap();
+    assert!(!data.timestamps.is_empty());
+    assert!(data.duration() > 0.0);
+    assert!(data.metadata.info.is_empty());
+    assert!(data.metadata.tune_constants.is_empty());
 }
 
 #[test]

@@ -4,5 +4,6 @@
 /result
 /result-*
 !tests/fixtures/*.mlg
+!samples/*.mlg
 
 /dist

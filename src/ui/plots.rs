@@ -7,6 +7,8 @@ use egui_plot::{Legend, Line, Plot, PlotBounds, PlotPoint, Points, VLine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+type DefaultPlotGroup<'a> = (&'a str, bool, &'a [(&'a str, Option<&'a str>)]);
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Series {
     pub name: String,
@@ -146,6 +148,67 @@ impl PlotState {
         if matches!(data.fields[id].kind, FieldKind::Numeric { .. }) {
             self.groups[0].fields.push(Series::from_id(data, id));
         }
+    }
+
+    /// Populate the first-run plot layout from source channels present in the log.
+    /// Existing user groups, including intentionally empty groups, are preserved.
+    pub fn initialize_defaults(&mut self, data: &Dataset) {
+        if self.groups.iter().any(|group| !group.fields.is_empty()) {
+            return;
+        }
+        let defaults: [DefaultPlotGroup<'_>; 5] = [
+            (
+                "RPM / AFR / VE",
+                true,
+                &[
+                    ("RPM", Some("rpm")),
+                    ("AFR", Some("O2")),
+                    ("VE _Current", Some("%")),
+                ],
+            ),
+            (
+                "CLT / WUE / Fan",
+                true,
+                &[("CLT", None), ("Gwarm", Some("%")), ("Fan", None)],
+            ),
+            (
+                "Ignition timing",
+                false,
+                &[("Advance _Current", Some("deg"))],
+            ),
+            ("MAP", false, &[("MAP", Some("kpa"))]),
+            ("Throttle", false, &[("TPS", Some("%"))]),
+        ];
+        let groups: Vec<_> = defaults
+            .iter()
+            .filter_map(|(name, stacked, fields)| {
+                let fields: Vec<_> = fields
+                    .iter()
+                    .filter_map(|(field_name, unit)| {
+                        data.field_ids(field_name)
+                            .iter()
+                            .copied()
+                            .find(|&id| {
+                                matches!(data.fields[id].kind, FieldKind::Numeric { .. })
+                                    && unit.is_none_or(|unit| data.fields[id].unit == unit)
+                            })
+                            .map(|id| Series::from_id(data, id))
+                    })
+                    .collect();
+                (!fields.is_empty()).then(|| Group {
+                    name: (*name).into(),
+                    fields,
+                    stacked: *stacked,
+                    reset: true,
+                })
+            })
+            .collect();
+        self.groups = if groups.is_empty() {
+            vec![Group::default()]
+        } else {
+            groups
+        };
+        self.clear_dataset_cache();
     }
 
     #[cfg(test)]

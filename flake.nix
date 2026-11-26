@@ -24,6 +24,9 @@
         inherit system;
         overlays = [ (import rust-overlay) ];
       };
+      isSampleAsset =
+        path: _type:
+        baseNameOf path == "samples" || pkgs.lib.hasPrefix "${toString ./.}/samples/" (toString path);
       toolchain = pkgs.rust-bin.stable."1.88.0".minimal.override {
         extensions = [
           "rust-src"
@@ -35,7 +38,11 @@
       craneLib = (crane.mkLib pkgs).overrideToolchain toolchain;
       src = pkgs.lib.cleanSourceWith {
         src = ./.;
-        filter = path: type: craneLib.filterCargoSources path type || baseNameOf path == "sanitized.mlg";
+        filter =
+          path: type:
+          craneLib.filterCargoSources path type
+          || baseNameOf path == "sanitized.mlg"
+          || isSampleAsset path type;
       };
       libs = with pkgs; [
         libxkbcommon
@@ -70,7 +77,9 @@
           version = "0.1.0";
           src = pkgs.lib.cleanSourceWith {
             src = ./.;
-            filter = path: type: craneLib.filterCargoSources path type || baseNameOf path == "index.html";
+            filter =
+              path: type:
+              craneLib.filterCargoSources path type || baseNameOf path == "index.html" || isSampleAsset path type;
           };
           nativeBuildInputs = common.nativeBuildInputs ++ [
             pkgs.trunk
@@ -92,7 +101,9 @@
             src = ./.;
             filter =
               path: type:
-              craneLib.filterCargoSources path type || builtins.elem (baseNameOf path) [ "index-smoke.html" ];
+              craneLib.filterCargoSources path type
+              || builtins.elem (baseNameOf path) [ "index-smoke.html" ]
+              || isSampleAsset path type;
           };
           nativeBuildInputs = common.nativeBuildInputs ++ [
             pkgs.trunk

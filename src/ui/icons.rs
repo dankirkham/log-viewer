@@ -1,5 +1,25 @@
 use eframe::egui::{self, Pos2, Rect, Response, Shape, Stroke, Vec2};
 
+/// Paint the round waveform mark in the Log Viewer menu trigger.
+pub fn paint_logo(ui: &egui::Ui, button: Rect) {
+    let center = button.center();
+    let color = egui::Color32::from_rgb(90, 205, 225);
+    let painter = ui.painter();
+    painter.circle_stroke(center, 9.0, Stroke::new(1.6, color));
+    let points = [
+        (-5.5, 0.5),
+        (-3.0, 0.5),
+        (-1.3, -3.6),
+        (1.1, 4.0),
+        (3.0, -1.2),
+        (5.5, -1.2),
+    ]
+    .into_iter()
+    .map(|(x, y)| center + Vec2::new(x, y))
+    .collect();
+    painter.add(Shape::line(points, Stroke::new(1.7, color)));
+}
+
 #[derive(Clone, Copy)]
 pub enum Icon {
     Add,
