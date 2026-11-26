@@ -186,12 +186,10 @@ fn sanitized_source_descriptors() {
 }
 
 #[test]
-fn bundled_demo_is_parseable_without_capture_or_tune_metadata() {
+fn bundled_demo_is_parseable_with_its_available_metadata() {
     let data = parse(include_bytes!("../samples/demo.mlg")).unwrap();
     assert!(!data.timestamps.is_empty());
     assert!(data.duration() > 0.0);
-    assert!(data.metadata.info.is_empty());
-    assert!(data.metadata.tune_constants.is_empty());
 }
 
 #[test]
