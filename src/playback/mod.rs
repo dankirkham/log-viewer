@@ -36,6 +36,27 @@ impl Playback {
         self.sample_index = data.sample_at(self.position);
         self.last_tick = None;
     }
+    /// Move to an adjacent recorded sample without constructing an intermediate value.
+    pub fn step_sample(&mut self, direction: isize, data: &Dataset) {
+        if data.elapsed.is_empty() || direction == 0 {
+            return;
+        }
+        let current = self
+            .sample_index
+            .or_else(|| data.sample_at(self.position))
+            .unwrap_or(0);
+        let next = if direction < 0 {
+            current.saturating_sub(direction.unsigned_abs())
+        } else {
+            current
+                .saturating_add(direction as usize)
+                .min(data.elapsed.len() - 1)
+        };
+        self.position = data.elapsed[next];
+        self.sample_index = Some(next);
+        self.playing = false;
+        self.last_tick = None;
+    }
     pub fn toggle(&mut self, data: &Dataset) {
         if self.playing {
             self.playing = false;

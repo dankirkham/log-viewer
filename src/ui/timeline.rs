@@ -170,6 +170,19 @@ pub fn show(
                 ui.label(format!("· recorded sample {sample_time:.3} s"));
             }
         }
+        let can_step = data.elapsed.len() > 1;
+        if ui
+            .add_enabled(can_step, egui::Button::new("‹ Sample"))
+            .clicked()
+        {
+            playback.step_sample(-1, data);
+        }
+        if ui
+            .add_enabled(can_step, egui::Button::new("Sample ›"))
+            .clicked()
+        {
+            playback.step_sample(1, data);
+        }
         if ui.button("Full log").clicked() {
             selected = [0.0, duration];
             *range = None;
