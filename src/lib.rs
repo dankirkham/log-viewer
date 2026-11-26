@@ -1020,52 +1020,65 @@ impl eframe::App for LogViewer {
                     }
                     ui.add_space(8.0);
                     ui.set_max_width(640.0);
-                    ui.label("Available samples");
                     let list_height = (ui.available_height() * 0.5).clamp(140.0, 320.0);
                     let mut clicked_sample = None;
-                    egui::ScrollArea::vertical()
-                        .max_height(list_height)
-                        .show(ui, |ui| {
-                            for (index, sample) in SAMPLE_OPTIONS.iter().enumerate() {
-                                if ui
-                                    .selectable_label(
-                                        self.selected_sample == Some(index),
-                                        sample.name,
-                                    )
-                                    .clicked()
-                                {
-                                    clicked_sample = Some(index);
+                    egui::Frame::group(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(320.0);
+                        ui.set_max_width(620.0);
+                        ui.label("Sample files");
+                        egui::ScrollArea::vertical()
+                            .id_salt("sample-file-list")
+                            .max_height(list_height)
+                            .show(ui, |ui| {
+                                for (index, sample) in SAMPLE_OPTIONS.iter().enumerate() {
+                                    if ui
+                                        .selectable_label(
+                                            self.selected_sample == Some(index),
+                                            sample.name,
+                                        )
+                                        .clicked()
+                                    {
+                                        clicked_sample = Some(index);
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    });
                     if let Some(index) = clicked_sample {
                         self.selected_sample = Some(index);
                     }
                     ui.add_space(8.0);
-                    ui.horizontal(|ui| {
-                        if ui
+                    let mut open_selected = false;
+                    let mut open_from_disk = false;
+                    let mut buttons = |ui: &mut egui::Ui| {
+                        open_selected = ui
                             .add_enabled(
                                 self.loading.is_none() && self.selected_sample.is_some(),
-                                egui::Button::new("Open selected sample"),
+                                egui::Button::new("Open selected sample")
+                                    .min_size(egui::vec2(200.0, 40.0)),
                             )
-                            .clicked()
-                        {
-                            if let Some(sample) =
-                                self.selected_sample.and_then(|i| SAMPLE_OPTIONS.get(i))
-                            {
-                                self.load_sample_named(ctx, sample.name, None, false);
-                            }
-                        }
-                        if ui
+                            .clicked();
+                        open_from_disk = ui
                             .add_enabled(
                                 self.loading.is_none(),
-                                egui::Button::new("Open file from disk…"),
+                                egui::Button::new("Open file from disk…")
+                                    .min_size(egui::vec2(200.0, 40.0)),
                             )
-                            .clicked()
+                            .clicked();
+                    };
+                    if ui.available_width() >= 430.0 {
+                        ui.horizontal_centered(&mut buttons);
+                    } else {
+                        ui.vertical_centered(&mut buttons);
+                    }
+                    if open_selected {
+                        if let Some(sample) =
+                            self.selected_sample.and_then(|i| SAMPLE_OPTIONS.get(i))
                         {
-                            self.open(ctx);
+                            self.load_sample_named(ctx, sample.name, None, false);
                         }
-                    });
+                    } else if open_from_disk {
+                        self.open(ctx);
+                    }
                     if self.loading.is_some() {
                         ui.add_space(12.0);
                         ui.spinner();
