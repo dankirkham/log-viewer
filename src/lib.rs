@@ -303,6 +303,13 @@ fn show_plots(
             }
         });
     }
+    if !data.metadata.timeline_diagnostics.is_empty() {
+        egui::CollapsingHeader::new("Timeline adjustments").show(ui, |ui| {
+            for diagnostic in &data.metadata.timeline_diagnostics {
+                ui.label(diagnostic);
+            }
+        });
+    }
     seek
 }
 
@@ -856,6 +863,11 @@ impl eframe::App for LogViewer {
                     if let Some(diagnostic) = &data.metadata.tune_diagnostic {
                         ui.separator();
                         ui.add(egui::Label::new(format!("Tune: {diagnostic}")).truncate())
+                            .on_hover_text(diagnostic);
+                    }
+                    if let Some(diagnostic) = data.metadata.timeline_diagnostics.first() {
+                        ui.separator();
+                        ui.add(egui::Label::new("Timeline adjusted").truncate())
                             .on_hover_text(diagnostic);
                     }
                 });

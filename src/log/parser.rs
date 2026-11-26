@@ -54,6 +54,7 @@ pub struct Metadata {
     pub tune_diagnostic: Option<String>,
     pub marker_count: usize,
     pub derived_diagnostics: Vec<String>,
+    pub timeline_diagnostics: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -415,18 +416,27 @@ pub fn parse(bytes: &[u8]) -> Result<Dataset, String> {
         .enumerate()
         .map(|(i, v)| v.ok_or_else(|| format!("Missing or non-finite timestamp at sample {i}")))
         .collect::<Result<_, _>>()?;
-    for (i, pair) in timestamps.windows(2).enumerate() {
-        if pair[1] < pair[0] {
-            return Err(format!(
-                "Timestamp decreases at sample {} ({} to {})",
-                i + 1,
-                pair[0],
-                pair[1]
-            ));
-        }
-    }
     let first = timestamps.first().copied().unwrap_or(0.0);
-    let elapsed = timestamps.iter().map(|t| t - first).collect();
+    let mut elapsed = Vec::with_capacity(timestamps.len());
+    let mut timeline_offset = 0.0;
+    let mut previous = None;
+    for (i, &timestamp) in timestamps.iter().enumerate() {
+        let mut timeline_time = timestamp + timeline_offset;
+        if let Some(previous_time) = previous {
+            if timeline_time < previous_time {
+                let previous_recorded_time = previous_time - timeline_offset;
+                let adjustment = previous_time - timeline_time;
+                timeline_offset += adjustment;
+                timeline_time = timestamp + timeline_offset;
+                metadata.timeline_diagnostics.push(format!(
+                    "Recorded Time moves backward from {previous_recorded_time:.3} s to {timestamp:.3} s before sample {}. The viewer elapsed-time axis adds {adjustment:.3} s from this sample onward; raw Time values and samples are unchanged.",
+                    i + 1,
+                ));
+            }
+        }
+        elapsed.push(timeline_time - first);
+        previous = Some(timeline_time);
+    }
     let mut data = Dataset {
         fields,
         columns,

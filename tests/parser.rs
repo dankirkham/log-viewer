@@ -53,10 +53,11 @@ fn crop_keeps_only_original_inclusive_rows_and_remains_parseable() {
     assert!(cropped.contains("does not contain"));
 }
 #[test]
-fn rejects_decreasing_bad_crc_and_ambiguous_time() {
-    assert!(parse(&fixture(&[1., 0.]))
-        .unwrap_err()
-        .contains("decreases"));
+fn handles_decreasing_time_and_rejects_bad_crc_and_ambiguous_time() {
+    let decreasing = parse(&fixture(&[1., 0.])).unwrap();
+    assert_eq!(decreasing.timestamps, [1.0, 0.0]);
+    assert_eq!(decreasing.elapsed, [0.0, 0.0]);
+    assert_eq!(decreasing.metadata.timeline_diagnostics.len(), 1);
     let mut b = fixture(&[0.]);
     *b.last_mut().unwrap() ^= 1;
     assert!(parse(&b).unwrap_err().contains("Checksum"));
