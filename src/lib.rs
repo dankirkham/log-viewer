@@ -19,6 +19,21 @@ struct LoadedLog {
     auto_play: bool,
 }
 
+#[derive(Clone, Copy)]
+struct SampleOption {
+    name: &'static str,
+}
+
+const SAMPLE_OPTIONS: &[SampleOption] = &[
+    SampleOption { name: "demo.mlg" },
+    SampleOption {
+        name: "2026-11-26_12.10.47-oscillation.mlg",
+    },
+    SampleOption {
+        name: "2026-11-26_12.10.47-warm-idle.mlg",
+    },
+];
+
 #[derive(Clone, Copy, Default)]
 struct LinkView {
     playhead: Option<f64>,
@@ -43,6 +58,8 @@ pub struct LogViewer {
     exporting: Option<Receiver<ExportResult>>,
     #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
     sample_name: Option<String>,
+    picker_open: bool,
+    selected_sample: Option<usize>,
     link_view: Option<LinkView>,
     search: String,
     playback: playback::Playback,
@@ -333,6 +350,7 @@ impl LogViewer {
             settings,
             plots,
             playback,
+            picker_open: true,
             ..Self::default()
         };
         #[cfg(target_arch = "wasm32")]
@@ -342,25 +360,7 @@ impl LogViewer {
             app
         }
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let mut app = app;
-            app.load_default_demo();
-            app
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_default_demo(&mut self) {
-        let bytes = include_bytes!("../samples/demo.mlg").to_vec();
-        if let Ok(data) = log::parse(&bytes) {
-            self.install_loaded(LoadedLog {
-                name: "demo.mlg".into(),
-                bytes,
-                dataset: data,
-                load_ms: None,
-                sample_name: Some("demo.mlg".into()),
-                auto_play: true,
-            });
-        }
+        app
     }
     fn install_loaded(&mut self, loaded: LoadedLog) {
         let LoadedLog {
@@ -372,6 +372,8 @@ impl LogViewer {
             auto_play,
         } = loaded;
         self.filename = name;
+        self.picker_open = false;
+        self.selected_sample = None;
         self.source_bytes = bytes;
         self.sample_name = sample_name;
         self.playback.reset(&data);
@@ -409,6 +411,11 @@ impl LogViewer {
         let _ = load_ms;
         self.error = None;
         self.notice = None;
+    }
+    fn show_sample_picker(&mut self) {
+        self.picker_open = true;
+        self.selected_sample = None;
+        self.playback.playing = false;
     }
     fn open(&mut self, ctx: &egui::Context) {
         self.link_view = None;
@@ -547,6 +554,95 @@ impl LogViewer {
         });
     }
 
+    fn load_sample_named(
+        &mut self,
+        ctx: &egui::Context,
+        name: &'static str,
+        view: Option<LinkView>,
+        auto_play: bool,
+    ) {
+        self.link_view = view;
+        self.sample_name = Some(name.to_owned());
+        let (tx, rx) = mpsc::channel();
+        self.loading = Some(rx);
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let bytes: &'static [u8] = match name {
+                "demo.mlg" => include_bytes!("../samples/demo.mlg"),
+                "2026-11-26_12.10.47-oscillation.mlg" => {
+                    include_bytes!("../samples/2026-11-26_12.10.47-oscillation.mlg")
+                }
+                "2026-11-26_12.10.47-warm-idle.mlg" => {
+                    include_bytes!("../samples/2026-11-26_12.10.47-warm-idle.mlg")
+                }
+                _ => {
+                    self.loading = None;
+                    self.error = Some(format!("Sample {name} is not bundled"));
+                    return;
+                }
+            };
+            let name = name.to_owned();
+            let ctx = ctx.clone();
+            std::thread::spawn(move || {
+                let result = log::parse(bytes).map(|dataset| {
+                    Some(LoadedLog {
+                        name: name.clone(),
+                        bytes: bytes.to_vec(),
+                        dataset,
+                        load_ms: None,
+                        sample_name: Some(name),
+                        auto_play,
+                    })
+                });
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let name = name.to_owned();
+            let ctx = ctx.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                use web_sys::wasm_bindgen::JsCast;
+                let result = async {
+                    let path = format!("./samples/{name}");
+                    let window = web_sys::window()
+                        .ok_or_else(|| "Browser window is unavailable".to_owned())?;
+                    let response =
+                        wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&path))
+                            .await
+                            .map_err(|error| format!("Could not fetch sample: {error:?}"))?
+                            .dyn_into::<web_sys::Response>()
+                            .map_err(|_| {
+                                "Sample request returned an invalid response".to_owned()
+                            })?;
+                    if !response.ok() {
+                        return Err(format!("Sample {name} returned HTTP {}", response.status()));
+                    }
+                    let buffer =
+                        wasm_bindgen_futures::JsFuture::from(response.array_buffer().map_err(
+                            |error| format!("Could not read sample response: {error:?}"),
+                        )?)
+                        .await
+                        .map_err(|error| format!("Could not read sample bytes: {error:?}"))?;
+                    let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
+                    let dataset = log::parse(&bytes)?;
+                    Ok(Some(LoadedLog {
+                        name: name.clone(),
+                        bytes,
+                        dataset,
+                        load_ms: None,
+                        sample_name: Some(name),
+                        auto_play,
+                    }))
+                }
+                .await;
+                let _ = tx.send(result);
+                ctx.request_repaint();
+            });
+        }
+    }
+
     #[cfg(target_arch = "wasm32")]
     fn load_sample_link(&mut self, ctx: egui::Context) {
         let Some(window) = web_sys::window() else {
@@ -560,11 +656,14 @@ impl LogViewer {
             self.error = Some("Could not read sample-link parameters".into());
             return;
         };
-        let name = params.get("sample").unwrap_or_else(|| "demo.mlg".into());
-        if !valid_sample_name(&name) {
-            self.error = Some("Sample name must be a .mlg filename without a path".into());
+        if search.is_empty() || search == "?" {
             return;
         }
+        let name = params.get("sample").unwrap_or_else(|| "demo.mlg".into());
+        let Some(sample) = SAMPLE_OPTIONS.iter().find(|sample| sample.name == name) else {
+            self.error = Some("Sample name is not in the available sample list".into());
+            return;
+        };
         let parse_time = |key: &str| -> Result<Option<f64>, String> {
             params
                 .get(key)
@@ -600,45 +699,7 @@ impl LogViewer {
             self.error = Some("Sample-link range start must be before end".into());
             return;
         }
-        self.sample_name = Some(name.clone());
-        self.link_view = Some(view);
-        let (tx, rx) = mpsc::channel();
-        self.loading = Some(rx);
-        wasm_bindgen_futures::spawn_local(async move {
-            use web_sys::wasm_bindgen::JsCast;
-            let result = async {
-                let path = format!("./samples/{name}");
-                let response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(&path))
-                    .await
-                    .map_err(|error| format!("Could not fetch sample: {error:?}"))?
-                    .dyn_into::<web_sys::Response>()
-                    .map_err(|_| "Sample request returned an invalid response".to_owned())?;
-                if !response.ok() {
-                    return Err(format!("Sample {name} returned HTTP {}", response.status()));
-                }
-                let buffer = wasm_bindgen_futures::JsFuture::from(
-                    response
-                        .array_buffer()
-                        .map_err(|error| format!("Could not read sample response: {error:?}"))?,
-                )
-                .await
-                .map_err(|error| format!("Could not read sample bytes: {error:?}"))?;
-                let bytes = js_sys::Uint8Array::new(&buffer).to_vec();
-                let dataset = log::parse(&bytes)?;
-                Ok(LoadedLog {
-                    name: name.clone(),
-                    bytes,
-                    dataset,
-                    load_ms: None,
-                    sample_name: Some(name),
-                    auto_play: true,
-                })
-            }
-            .await
-            .map(Some);
-            let _ = tx.send(result);
-            ctx.request_repaint();
-        });
+        self.load_sample_named(&ctx, sample.name, Some(view), true);
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -661,14 +722,6 @@ impl LogViewer {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-fn valid_sample_name(name: &str) -> bool {
-    name.ends_with(".mlg")
-        && name[..name.len().saturating_sub(4)]
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-        && name.len() > 4
-}
 impl eframe::App for LogViewer {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.settings.speed = self.playback.speed;
@@ -778,11 +831,11 @@ impl eframe::App for LogViewer {
                         .corner_radius(17.0),
                     |ui| {
                         if ui
-                            .add_enabled(self.loading.is_none(), egui::Button::new("Open log…"))
+                            .add_enabled(self.loading.is_none(), egui::Button::new("Open…"))
                             .clicked()
                         {
                             ui.close_menu();
-                            self.open(ctx);
+                            self.show_sample_picker();
                         }
                         if let Some(data) = &self.dataset {
                             let range = self.plots.time_range().unwrap_or([0.0, data.duration()]);
@@ -815,7 +868,9 @@ impl eframe::App for LogViewer {
                 ui::icons::paint_logo(ui, logo_menu.response.rect);
                 ui.label("Log Viewer");
                 ui.separator();
-                if !self.filename.is_empty() {
+                if self.picker_open {
+                    ui.label("Choose a log");
+                } else if !self.filename.is_empty() {
                     ui.add(egui::Label::new(&self.filename).truncate())
                         .on_hover_text(&self.filename);
                 } else if self.loading.is_some() {
@@ -854,65 +909,67 @@ impl eframe::App for LogViewer {
                 });
             });
         });
-        egui::TopBottomPanel::bottom("transport").show(ctx, |ui| {
-            if let Some(data) = &self.dataset {
-                ui.horizontal(|ui| {
-                    ui.label(format!("{} samples", data.timestamps.len()));
+        if !self.picker_open {
+            egui::TopBottomPanel::bottom("transport").show(ctx, |ui| {
+                if let Some(data) = &self.dataset {
+                    ui.horizontal(|ui| {
+                        ui.label(format!("{} samples", data.timestamps.len()));
+                        ui.separator();
+                        ui.label(format!("{:.3} s", data.duration()));
+                        if let Some(diagnostic) = &data.metadata.tune_diagnostic {
+                            ui.separator();
+                            ui.add(egui::Label::new(format!("Tune: {diagnostic}")).truncate())
+                                .on_hover_text(diagnostic);
+                        }
+                        if let Some(diagnostic) = data.metadata.timeline_diagnostics.first() {
+                            ui.separator();
+                            ui.add(egui::Label::new("Timeline adjusted").truncate())
+                                .on_hover_text(diagnostic);
+                        }
+                    });
                     ui.separator();
-                    ui.label(format!("{:.3} s", data.duration()));
-                    if let Some(diagnostic) = &data.metadata.tune_diagnostic {
-                        ui.separator();
-                        ui.add(egui::Label::new(format!("Tune: {diagnostic}")).truncate())
-                            .on_hover_text(diagnostic);
-                    }
-                    if let Some(diagnostic) = data.metadata.timeline_diagnostics.first() {
-                        ui.separator();
-                        ui.add(egui::Label::new("Timeline adjusted").truncate())
-                            .on_hover_text(diagnostic);
-                    }
-                });
-                ui.separator();
-                ui.horizontal(|ui| {
-                    let (play_icon, play_tip) = if self.playback.playing {
-                        (ui::icons::Icon::Pause, "Pause playback")
-                    } else {
-                        (ui::icons::Icon::Play, "Start playback")
-                    };
-                    if ui::icons::button(ui, play_icon, play_tip, false).clicked() {
-                        self.playback.toggle(data);
-                    }
-                    if ui.button("-10 s").clicked() {
-                        self.playback.seek(self.playback.position - 10.0, data);
-                    }
-                    if ui.button("+10 s").clicked() {
-                        self.playback.seek(self.playback.position + 10.0, data);
-                    }
-                    egui::ComboBox::from_id_salt("speed")
-                        .selected_text(format!("{}x", self.playback.speed))
-                        .show_ui(ui, |ui| {
-                            for speed in playback::SPEEDS {
-                                if ui
-                                    .selectable_label(
-                                        self.playback.speed == speed,
-                                        format!("{speed}x"),
-                                    )
-                                    .clicked()
-                                {
-                                    self.playback.set_speed(speed);
+                    ui.horizontal(|ui| {
+                        let (play_icon, play_tip) = if self.playback.playing {
+                            (ui::icons::Icon::Pause, "Pause playback")
+                        } else {
+                            (ui::icons::Icon::Play, "Start playback")
+                        };
+                        if ui::icons::button(ui, play_icon, play_tip, false).clicked() {
+                            self.playback.toggle(data);
+                        }
+                        if ui.button("-10 s").clicked() {
+                            self.playback.seek(self.playback.position - 10.0, data);
+                        }
+                        if ui.button("+10 s").clicked() {
+                            self.playback.seek(self.playback.position + 10.0, data);
+                        }
+                        egui::ComboBox::from_id_salt("speed")
+                            .selected_text(format!("{}x", self.playback.speed))
+                            .show_ui(ui, |ui| {
+                                for speed in playback::SPEEDS {
+                                    if ui
+                                        .selectable_label(
+                                            self.playback.speed == speed,
+                                            format!("{speed}x"),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.playback.set_speed(speed);
+                                    }
                                 }
-                            }
-                        });
-                });
-                let mut range = self.plots.time_range();
-                if ui::timeline::show(ui, data, &mut self.playback, &mut range) {
-                    self.plots.set_time_range(range);
+                            });
+                    });
+                    let mut range = self.plots.time_range();
+                    if ui::timeline::show(ui, data, &mut self.playback, &mut range) {
+                        self.plots.set_time_range(range);
+                    }
                 }
-            }
-        });
+            });
+        }
         let mobile = ctx.input(|input| input.screen_rect.width() < 1100.0);
         let mut plot_seek = None;
         let mut reset_all = false;
-        if !mobile {
+        if !mobile && !self.picker_open {
             if let Some(data) = &self.dataset {
                 egui::SidePanel::left("map-panels")
                     .default_width(560.0)
@@ -952,14 +1009,72 @@ impl eframe::App for LogViewer {
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
+            if self.picker_open || self.dataset.is_none() {
+                ui.vertical_centered(|ui| {
+                    let top_space = (ui.available_height() * 0.12).max(20.0);
+                    ui.add_space(top_space);
+                    ui.heading("Choose a log");
+                    ui.label("Choose a sample log or open a file from disk.");
+                    if let Some(error) = &self.error {
+                        ui.colored_label(egui::Color32::LIGHT_RED, error);
+                    }
+                    ui.add_space(8.0);
+                    ui.set_max_width(640.0);
+                    ui.label("Available samples");
+                    let list_height = (ui.available_height() * 0.5).clamp(140.0, 320.0);
+                    let mut clicked_sample = None;
+                    egui::ScrollArea::vertical()
+                        .max_height(list_height)
+                        .show(ui, |ui| {
+                            for (index, sample) in SAMPLE_OPTIONS.iter().enumerate() {
+                                if ui
+                                    .selectable_label(
+                                        self.selected_sample == Some(index),
+                                        sample.name,
+                                    )
+                                    .clicked()
+                                {
+                                    clicked_sample = Some(index);
+                                }
+                            }
+                        });
+                    if let Some(index) = clicked_sample {
+                        self.selected_sample = Some(index);
+                    }
+                    ui.add_space(8.0);
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_enabled(
+                                self.loading.is_none() && self.selected_sample.is_some(),
+                                egui::Button::new("Open selected sample"),
+                            )
+                            .clicked()
+                        {
+                            if let Some(sample) =
+                                self.selected_sample.and_then(|i| SAMPLE_OPTIONS.get(i))
+                            {
+                                self.load_sample_named(ctx, sample.name, None, false);
+                            }
+                        }
+                        if ui
+                            .add_enabled(
+                                self.loading.is_none(),
+                                egui::Button::new("Open file from disk…"),
+                            )
+                            .clicked()
+                        {
+                            self.open(ctx);
+                        }
+                    });
+                    if self.loading.is_some() {
+                        ui.add_space(12.0);
+                        ui.spinner();
+                        ui.label("Loading log…");
+                    }
+                });
+                return;
+            }
             let Some(data) = &self.dataset else {
-                let rect = egui::Rect::from_center_size(
-                    ui.available_rect_before_wrap().center(),
-                    egui::Vec2::new(164.0, 40.0),
-                );
-                if ui.put(rect, egui::Button::new("Open log…")).clicked() {
-                    self.open(ctx);
-                }
                 return;
             };
             if mobile {
