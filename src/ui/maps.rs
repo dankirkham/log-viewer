@@ -175,7 +175,7 @@ fn draw_table(
     // width even when AFR and VE have different numbers of breakpoints. Keep
     // the desktop cell-size cap so very wide panels do not produce oversized
     // cells.
-    let w = if available_width < 700.0 {
+    let w = if available_width < 1100.0 {
         (cell_space / nx as f32).max(8.0)
     } else {
         (cell_space / nx as f32).clamp(8.0, 52.0)
