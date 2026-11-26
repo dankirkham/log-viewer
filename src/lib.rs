@@ -1032,6 +1032,7 @@ impl eframe::App for LogViewer {
                         ui.set_max_width(640.0);
                         let list_height = (ui.available_height() * 0.5).clamp(140.0, 320.0);
                         let mut clicked_sample = None;
+                        let mut double_clicked_sample = None;
                         egui::Frame::group(ui.style()).show(ui, |ui| {
                             ui.set_min_width(320.0);
                             ui.set_max_width(620.0);
@@ -1041,20 +1042,29 @@ impl eframe::App for LogViewer {
                                 .max_height(list_height)
                                 .show(ui, |ui| {
                                     for (index, sample) in SAMPLE_OPTIONS.iter().enumerate() {
-                                        if ui
-                                            .selectable_label(
-                                                self.selected_sample == Some(index),
-                                                sample.name,
-                                            )
-                                            .clicked()
-                                        {
+                                        let response = ui.selectable_label(
+                                            self.selected_sample == Some(index),
+                                            sample.name,
+                                        );
+                                        if response.clicked() {
                                             clicked_sample = Some(index);
+                                        }
+                                        if response.double_clicked() {
+                                            double_clicked_sample = Some(index);
                                         }
                                     }
                                 });
                         });
                         if let Some(index) = clicked_sample {
                             self.selected_sample = Some(index);
+                        }
+                        if let Some(index) = double_clicked_sample {
+                            self.selected_sample = Some(index);
+                            if self.loading.is_none() {
+                                if let Some(sample) = SAMPLE_OPTIONS.get(index) {
+                                    self.load_sample_named(ctx, sample.name, None, false);
+                                }
+                            }
                         }
                         ui.add_space(8.0);
                         let mut open_selected = false;
