@@ -1,6 +1,6 @@
 # Public sample logs
 
-`demo.mlg` is the bundled startup sample for desktop and for the web when no sample is named. The viewer reads the metadata and tune information present in the file; table overlays and derived channels are available only when their source definitions and channels are present and verified. Its numeric `Gwarm` channel appears under its original name in the default CLT/WUE/Fan plot group; the source label is not rewritten or treated as a verified alias.
+`demo.mlg` is the bundled startup sample for desktop and for the web when no sample is named. The viewer reads the metadata and tune information present in the file; table overlays and derived channels are available only when their source definitions and channels are present and verified. Its numeric `Gwarm` channel appears under its original name in the default Fan plot group; the source label is not rewritten or treated as a verified alias.
 
 Place intentionally public, cropped `.mlg` files in this directory. The web build copies this directory unchanged. A link uses the filename only, for example:
 

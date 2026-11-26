@@ -299,12 +299,6 @@ fn contents(
             ui.label("Open a log to inspect a source table.");
         }
         (Some(Ok(table)), Some(data)) => {
-            if table.ignored_duplicate_rpm > 0 {
-                ui.label(format!(
-                    "Ignored {} repeated RPM column(s); kept the first column at each breakpoint.",
-                    table.ignored_duplicate_rpm
-                ));
-            }
             draw_table(ui, data, playback, table, heatmap, seconds, style)
         }
         (Some(Err(error)), Some(_)) => {

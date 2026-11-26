@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 type DefaultPlotGroup<'a> = (&'a str, bool, &'a [(&'a str, Option<&'a str>)]);
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Series {
     pub name: String,
     pub unit: String,
@@ -107,6 +107,43 @@ impl Default for PlotState {
         }
     }
 }
+
+fn groups_from_defaults(data: &Dataset, defaults: &[DefaultPlotGroup<'_>]) -> Vec<Group> {
+    defaults
+        .iter()
+        .filter_map(|(name, stacked, fields)| {
+            let fields: Vec<_> = fields
+                .iter()
+                .filter_map(|(field_name, unit)| {
+                    data.field_ids(field_name)
+                        .iter()
+                        .copied()
+                        .find(|&id| {
+                            matches!(data.fields[id].kind, FieldKind::Numeric { .. })
+                                && unit.is_none_or(|unit| data.fields[id].unit == unit)
+                        })
+                        .map(|id| Series::from_id(data, id))
+                })
+                .collect();
+            (!fields.is_empty()).then(|| Group {
+                name: (*name).into(),
+                fields,
+                stacked: *stacked,
+                reset: true,
+            })
+        })
+        .collect()
+}
+
+fn groups_match(actual: &[Group], expected: &[Group]) -> bool {
+    actual.len() == expected.len()
+        && actual.iter().zip(expected).all(|(actual, expected)| {
+            actual.name == expected.name
+                && actual.stacked == expected.stacked
+                && actual.fields == expected.fields
+        })
+}
+
 impl PlotState {
     pub fn sanitize(&mut self) {
         if self.groups.is_empty() {
@@ -153,10 +190,7 @@ impl PlotState {
     /// Populate the first-run plot layout from source channels present in the log.
     /// Existing user groups, including intentionally empty groups, are preserved.
     pub fn initialize_defaults(&mut self, data: &Dataset) {
-        if self.groups.iter().any(|group| !group.fields.is_empty()) {
-            return;
-        }
-        let defaults: [DefaultPlotGroup<'_>; 5] = [
+        let old_defaults: [DefaultPlotGroup<'_>; 5] = [
             (
                 "RPM / AFR / VE",
                 true,
@@ -179,36 +213,59 @@ impl PlotState {
             ("MAP", false, &[("MAP", Some("kpa"))]),
             ("Throttle", false, &[("TPS", Some("%"))]),
         ];
-        let groups: Vec<_> = defaults
-            .iter()
-            .filter_map(|(name, stacked, fields)| {
-                let fields: Vec<_> = fields
-                    .iter()
-                    .filter_map(|(field_name, unit)| {
-                        data.field_ids(field_name)
-                            .iter()
-                            .copied()
-                            .find(|&id| {
-                                matches!(data.fields[id].kind, FieldKind::Numeric { .. })
-                                    && unit.is_none_or(|unit| data.fields[id].unit == unit)
-                            })
-                            .map(|id| Series::from_id(data, id))
-                    })
-                    .collect();
-                (!fields.is_empty()).then(|| Group {
-                    name: (*name).into(),
-                    fields,
-                    stacked: *stacked,
-                    reset: true,
-                })
-            })
-            .collect();
+        let is_empty = self.groups.iter().all(|group| group.fields.is_empty());
+        let is_previous_default =
+            groups_match(&self.groups, &groups_from_defaults(data, &old_defaults));
+        if !is_empty && !is_previous_default {
+            return;
+        }
+        let defaults: [DefaultPlotGroup<'_>; 3] = [
+            (
+                "AFR",
+                false,
+                &[("AFR", Some("O2")), ("AFR Target", Some("O2"))],
+            ),
+            (
+                "Load",
+                true,
+                &[
+                    ("RPM", Some("rpm")),
+                    ("TPS", Some("%")),
+                    ("MAP", Some("kpa")),
+                    ("VE _Current", Some("%")),
+                ],
+            ),
+            (
+                "Fan",
+                true,
+                &[("CLT", None), ("Gwarm", Some("%")), ("Fan", None)],
+            ),
+        ];
+        let groups = groups_from_defaults(data, &defaults);
         self.groups = if groups.is_empty() {
             vec![Group::default()]
         } else {
             groups
         };
         self.clear_dataset_cache();
+    }
+
+    #[cfg(test)]
+    fn default_group_summary(&self) -> Vec<(String, bool, Vec<String>)> {
+        self.groups
+            .iter()
+            .map(|group| {
+                (
+                    group.name.clone(),
+                    group.stacked,
+                    group
+                        .fields
+                        .iter()
+                        .map(|field| field.name.clone())
+                        .collect(),
+                )
+            })
+            .collect()
     }
 
     #[cfg(test)]
@@ -900,6 +957,38 @@ mod tests {
         let elapsed = [0.0, 1.0, 1.0, 2.5, 4.0];
         let (start, end) = indices_for_range(&elapsed, [1.0, 2.5]);
         assert_eq!(&elapsed[start..end], &[1.0, 1.0, 2.5]);
+    }
+
+    #[test]
+    fn defaults_use_the_requested_plot_groups_and_stack_modes() {
+        let data = crate::log::parse(include_bytes!("../../samples/demo.mlg")).unwrap();
+        let mut state = PlotState::default();
+        state.initialize_defaults(&data);
+        assert_eq!(
+            state.default_group_summary(),
+            vec![
+                (
+                    "AFR".to_owned(),
+                    false,
+                    vec!["AFR".to_owned(), "AFR Target".to_owned()]
+                ),
+                (
+                    "Load".to_owned(),
+                    true,
+                    vec![
+                        "RPM".to_owned(),
+                        "TPS".to_owned(),
+                        "MAP".to_owned(),
+                        "VE _Current".to_owned()
+                    ]
+                ),
+                (
+                    "Fan".to_owned(),
+                    true,
+                    vec!["CLT".to_owned(), "Gwarm".to_owned(), "Fan".to_owned()]
+                )
+            ]
+        );
     }
 
     #[derive(Default)]

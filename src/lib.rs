@@ -81,6 +81,14 @@ impl Default for GaugeSettings {
     }
 }
 fn initial_gauges(data: &Dataset) -> Vec<ui::gauges::Gauge> {
+    initial_gauges_with_af_error(data, true)
+}
+
+fn initial_gauges_without_af_error(data: &Dataset) -> Vec<ui::gauges::Gauge> {
+    initial_gauges_with_af_error(data, false)
+}
+
+fn initial_gauges_with_af_error(data: &Dataset, include_af_error: bool) -> Vec<ui::gauges::Gauge> {
     [
         ("RPM", "rpm"),
         ("TPS", "%"),
@@ -92,11 +100,13 @@ fn initial_gauges(data: &Dataset) -> Vec<ui::gauges::Gauge> {
         ("MAP", "kpa"),
         ("AFR", "O2"),
         ("AFR Target", "O2"),
+        ("AFR error", "O2"),
         ("AFR error (%)", "%"),
         ("Battery V", "V"),
         ("Gammae", "%"),
     ]
     .iter()
+    .filter(|(name, _)| include_af_error || *name != "AFR error")
     .filter_map(|(name, unit)| {
         data.field_ids(name)
             .iter()
@@ -377,6 +387,8 @@ impl LogViewer {
         if !self.settings.initialized {
             self.settings.gauges = initial_gauges(&data);
             self.settings.initialized = true;
+        } else if self.settings.gauges == initial_gauges_without_af_error(&data) {
+            self.settings.gauges = initial_gauges(&data);
         }
         if auto_play {
             self.playback.toggle(&data);
