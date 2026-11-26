@@ -443,106 +443,117 @@ pub fn show_time_series(
     let mut remove_group = None;
     for (group_id, group) in state.groups.iter_mut().enumerate() {
         ui.group(|ui| {
-            ui.horizontal(|ui| {
-                let default_name = format!("G{}", group_id + 1);
-                ui.add(
-                    egui::TextEdit::singleline(&mut group.name)
-                        .hint_text(default_name)
-                        .desired_width(90.0),
-                );
-                if crate::ui::icons::button(
-                    ui,
-                    crate::ui::icons::Icon::Stack,
-                    "Toggle stacked plots",
-                    group.stacked,
-                )
-                .clicked()
-                {
-                    group.stacked = !group.stacked;
-                    group.reset = true;
-                }
-                if crate::ui::icons::button(
-                    ui,
-                    crate::ui::icons::Icon::Fit,
-                    "Fit to log / reset view",
-                    false,
-                )
-                .clicked()
-                {
-                    group.reset = true;
-                    state.cache.retain(|(g, _), _| *g != group_id);
-                }
-                if group_id > 0
-                    && crate::ui::icons::button(
-                        ui,
-                        crate::ui::icons::Icon::Remove,
-                        "Remove plot group",
-                        false,
-                    )
-                    .clicked()
-                {
-                    remove_group = Some(group_id);
-                }
-            });
-            let mut remove = None;
-            for (i, series) in group.fields.iter_mut().enumerate() {
-                ui.horizontal(|ui| {
-                    let label = ui.add(egui::Label::new(series.label()).truncate());
-                    if let Some(id) = series.id(data) {
-                        if let crate::log::Provenance::Derived {
-                            formula,
-                            dependencies,
-                        } = &data.fields[id].provenance
+            let default_name = format!("G{}", group_id + 1);
+            let title = if group.name.is_empty() {
+                default_name.clone()
+            } else {
+                group.name.clone()
+            };
+            ui.strong(title);
+            egui::CollapsingHeader::new("Configure")
+                .id_salt(("plot-config", group_id))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Name");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut group.name)
+                                .hint_text(default_name)
+                                .desired_width(120.0),
+                        );
+                        if crate::ui::icons::button(
+                            ui,
+                            crate::ui::icons::Icon::Stack,
+                            "Toggle stacked plots",
+                            group.stacked,
+                        )
+                        .clicked()
                         {
-                            label.on_hover_text(format!(
-                                "{}; dependencies: {}",
-                                formula,
-                                dependencies
-                                    .iter()
-                                    .map(|&id| data.fields[id].name.as_str())
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            ));
+                            group.stacked = !group.stacked;
+                            group.reset = true;
                         }
-                    }
-                    if crate::ui::icons::button(
-                        ui,
-                        crate::ui::icons::Icon::RightAxis,
-                        "Toggle right Y axis",
-                        series.normalized,
-                    )
-                    .clicked()
-                    {
-                        series.normalized = !series.normalized;
-                        group.reset = true;
-                    }
-                    if crate::ui::icons::button(
-                        ui,
-                        crate::ui::icons::Icon::Remove,
-                        "Remove field",
-                        false,
-                    )
-                    .clicked()
-                    {
-                        remove = Some(i);
-                    }
-                });
-            }
-            if let Some(i) = remove {
-                group.fields.remove(i);
-                state.cache.retain(|(g, _), _| *g != group_id);
-            }
-            egui::ComboBox::from_id_salt(("plot-add", group_id))
-                .selected_text("+ Field")
-                .show_ui(ui, |ui| {
-                    for f in &data.fields {
-                        if matches!(f.kind, FieldKind::Numeric { .. })
-                            && ui.button(format!("{} {}", f.name, f.unit)).clicked()
+                        if crate::ui::icons::button(
+                            ui,
+                            crate::ui::icons::Icon::Fit,
+                            "Fit to log / reset view",
+                            false,
+                        )
+                        .clicked()
                         {
-                            group.fields.push(Series::from_id(data, f.id));
-                            ui.close_menu();
+                            group.reset = true;
+                            state.cache.retain(|(g, _), _| *g != group_id);
                         }
+                        if group_id > 0
+                            && crate::ui::icons::button(
+                                ui,
+                                crate::ui::icons::Icon::Remove,
+                                "Remove plot group",
+                                false,
+                            )
+                            .clicked()
+                        {
+                            remove_group = Some(group_id);
+                        }
+                    });
+                    let mut remove = None;
+                    for (i, series) in group.fields.iter_mut().enumerate() {
+                        ui.horizontal(|ui| {
+                            let label = ui.add(egui::Label::new(series.label()).truncate());
+                            if let Some(id) = series.id(data) {
+                                if let crate::log::Provenance::Derived {
+                                    formula,
+                                    dependencies,
+                                } = &data.fields[id].provenance
+                                {
+                                    label.on_hover_text(format!(
+                                        "{}; dependencies: {}",
+                                        formula,
+                                        dependencies
+                                            .iter()
+                                            .map(|&id| data.fields[id].name.as_str())
+                                            .collect::<Vec<_>>()
+                                            .join(", ")
+                                    ));
+                                }
+                            }
+                            if crate::ui::icons::button(
+                                ui,
+                                crate::ui::icons::Icon::RightAxis,
+                                "Toggle right Y axis",
+                                series.normalized,
+                            )
+                            .clicked()
+                            {
+                                series.normalized = !series.normalized;
+                                group.reset = true;
+                            }
+                            if crate::ui::icons::button(
+                                ui,
+                                crate::ui::icons::Icon::Remove,
+                                "Remove field",
+                                false,
+                            )
+                            .clicked()
+                            {
+                                remove = Some(i);
+                            }
+                        });
                     }
+                    if let Some(i) = remove {
+                        group.fields.remove(i);
+                        state.cache.retain(|(g, _), _| *g != group_id);
+                    }
+                    egui::ComboBox::from_id_salt(("plot-add", group_id))
+                        .selected_text("+ Field")
+                        .show_ui(ui, |ui| {
+                            for f in &data.fields {
+                                if matches!(f.kind, FieldKind::Numeric { .. })
+                                    && ui.button(format!("{} {}", f.name, f.unit)).clicked()
+                                {
+                                    group.fields.push(Series::from_id(data, f.id));
+                                    ui.close_menu();
+                                }
+                            }
+                        });
                 });
             if group.fields.is_empty() {
                 ui.label("Choose numeric fields to plot.");
