@@ -1,23 +1,49 @@
 use eframe::egui::{self, Pos2, Rect, Response, Shape, Stroke, Vec2};
 
-/// Paint the round waveform mark in the Log Viewer menu trigger.
+/// Paint the Octocat mark in the Log Viewer menu trigger.
 pub fn paint_logo(ui: &egui::Ui, button: Rect) {
     let center = button.center();
-    let color = egui::Color32::from_rgb(90, 205, 225);
+    let color = ui.visuals().text_color();
     let painter = ui.painter();
-    painter.circle_stroke(center, 9.0, Stroke::new(1.6, color));
-    let points = [
-        (-5.5, 0.5),
-        (-3.0, 0.5),
-        (-1.3, -3.6),
-        (1.1, 4.0),
-        (3.0, -1.2),
-        (5.5, -1.2),
-    ]
-    .into_iter()
-    .map(|(x, y)| center + Vec2::new(x, y))
-    .collect();
-    painter.add(Shape::line(points, Stroke::new(1.7, color)));
+    let at = |x: f32, y: f32| center + Vec2::new(x, y);
+    let limb = Stroke::new(2.4, color);
+    for points in [
+        vec![at(-2.0, 1.5), at(-6.0, 0.5), at(-7.0, 3.5)],
+        vec![at(2.0, 1.5), at(6.0, 0.5), at(7.0, 3.5)],
+        vec![at(-2.2, 4.0), at(-3.0, 7.2)],
+        vec![at(2.2, 4.0), at(3.0, 7.2)],
+        vec![at(3.0, 3.0), at(6.0, 5.5), at(7.0, 4.5)],
+    ] {
+        painter.add(Shape::line(points, limb));
+    }
+    painter.add(Shape::convex_polygon(
+        vec![at(-5.0, -2.0), at(-5.8, -7.2), at(-1.3, -4.6)],
+        color,
+        Stroke::NONE,
+    ));
+    painter.add(Shape::convex_polygon(
+        vec![at(5.0, -2.0), at(5.8, -7.2), at(1.3, -4.6)],
+        color,
+        Stroke::NONE,
+    ));
+    painter.circle_filled(at(0.0, -1.8), 5.2, color);
+    painter.add(Shape::convex_polygon(
+        [
+            (-3.0, 1.0),
+            (3.0, 1.0),
+            (4.2, 3.0),
+            (3.1, 6.2),
+            (1.0, 7.0),
+            (-1.0, 7.0),
+            (-3.1, 6.2),
+            (-4.2, 3.0),
+        ]
+        .into_iter()
+        .map(|(x, y)| at(x, y))
+        .collect(),
+        color,
+        Stroke::NONE,
+    ));
 }
 
 #[derive(Clone, Copy)]

@@ -170,10 +170,9 @@ fn draw_table(
     let nx = table.x.len();
     let ny = table.y.len();
     let w = ((ui.available_width() - left - 8.0) / nx as f32).clamp(18.0, 52.0);
-    // VE and AFR share the right panel; size each table for roughly half of
-    // its viewport so both remain visible without scrolling the panel.
-    let target_height = (ui.available_height() * 0.82).max(150.0);
-    let h = ((target_height - top - 42.0) / ny as f32).clamp(7.0, 24.0);
+    // Keep table cells readable regardless of the viewport's remaining height.
+    // The containing map area scrolls when both tables do not fit vertically.
+    let h = (w * 0.72).clamp(14.0, 24.0);
     let size = Vec2::new(left + nx as f32 * w + 6.0, top + ny as f32 * h + 6.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
@@ -190,7 +189,7 @@ fn draw_table(
             egui::Align2::CENTER_BOTTOM,
             format_axis_number(*x),
             FontId::proportional((w.min(h) * 0.36).clamp(5.5, 8.5)),
-            Color32::LIGHT_GRAY,
+            ui.visuals().text_color(),
         );
     }
     for (j, y) in table.y.iter().enumerate() {
@@ -200,7 +199,7 @@ fn draw_table(
             egui::Align2::RIGHT_CENTER,
             format_axis_number(*y),
             FontId::proportional((w.min(h) * 0.36).clamp(5.5, 8.5)),
-            Color32::LIGHT_GRAY,
+            ui.visuals().text_color(),
         );
         for i in 0..nx {
             let value = table.cells[j * nx + i];
