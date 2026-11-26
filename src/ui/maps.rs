@@ -169,11 +169,24 @@ fn draw_table(
     let top = 34.0;
     let nx = table.x.len();
     let ny = table.y.len();
-    let w = ((ui.available_width() - left - 8.0) / nx as f32).clamp(8.0, 52.0);
+    let available_width = ui.available_width().max(1.0);
+    let cell_space = (available_width - left - 8.0).max(0.0);
+    // In the narrow responsive panel, let each table use the same full panel
+    // width even when AFR and VE have different numbers of breakpoints. Keep
+    // the desktop cell-size cap so very wide panels do not produce oversized
+    // cells.
+    let w = if available_width < 700.0 {
+        (cell_space / nx as f32).max(8.0)
+    } else {
+        (cell_space / nx as f32).clamp(8.0, 52.0)
+    };
     // Keep table cells readable regardless of the viewport's remaining height.
     // The containing map area scrolls when both tables do not fit vertically.
     let h = (w * 0.72).clamp(8.0, 24.0);
-    let size = Vec2::new(left + nx as f32 * w + 6.0, top + ny as f32 * h + 6.0);
+    let size = Vec2::new(
+        available_width.max(left + nx as f32 * w + 6.0),
+        top + ny as f32 * h + 6.0,
+    );
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     let painter = ui.painter_at(rect);
     let grid = rect.min + Vec2::new(left, top);
