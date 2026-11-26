@@ -1066,9 +1066,13 @@ impl eframe::App for LogViewer {
                             .clicked();
                     };
                     if ui.available_width() >= 430.0 {
-                        ui.horizontal_centered(&mut buttons);
+                        ui.with_layout(
+                            egui::Layout::left_to_right(egui::Align::Center)
+                                .with_main_align(egui::Align::Center),
+                            &mut buttons,
+                        );
                     } else {
-                        ui.vertical_centered(&mut buttons);
+                        ui.with_layout(egui::Layout::top_down(egui::Align::Center), &mut buttons);
                     }
                     if open_selected {
                         if let Some(sample) =
